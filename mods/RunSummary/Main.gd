@@ -33,6 +33,12 @@ var _acc_cash_spent: int = 0
 var _acc_conditions: Array = []
 var _acc_damage_taken: float = 0.0
 var _acc_last_health: float = 100.0
+var _acc_energy_used: float = 0.0
+var _acc_last_energy: float = 100.0
+var _acc_hydration_used: float = 0.0
+var _acc_last_hydration: float = 100.0
+var _acc_mental_lost: float = 0.0
+var _acc_last_mental: float = 100.0
 var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
@@ -197,6 +203,12 @@ func _start_run(scene):
     _acc_conditions = []
     _acc_damage_taken = 0.0
     _acc_last_health = gameData.health
+    _acc_energy_used = 0.0
+    _acc_last_energy = gameData.energy
+    _acc_hydration_used = 0.0
+    _acc_last_hydration = gameData.hydration
+    _acc_mental_lost = 0.0
+    _acc_last_mental = gameData.mental if "mental" in gameData else 100.0
     _acc_items_picked = 0
     _acc_last_inv_count = _snap_inv_count
     _inv_snapshot_ready = _snap_inv_count > 0
@@ -213,28 +225,47 @@ func _track_run():
     if current_xp > _acc_peak_xp:
         _acc_peak_xp = current_xp
 
-    # Track damage taken (health decreases)
+    # Track damage taken (accumulate decreases, ignore healing)
     var current_hp = gameData.health
     if current_hp < _acc_last_health:
         _acc_damage_taken += _acc_last_health - current_hp
     _acc_last_health = current_hp
+
+    # Track energy consumed (accumulate decreases, ignore eating)
+    var current_energy = gameData.energy
+    if current_energy < _acc_last_energy:
+        _acc_energy_used += _acc_last_energy - current_energy
+    _acc_last_energy = current_energy
+
+    # Track hydration consumed (accumulate decreases, ignore drinking)
+    var current_hydration = gameData.hydration
+    if current_hydration < _acc_last_hydration:
+        _acc_hydration_used += _acc_last_hydration - current_hydration
+    _acc_last_hydration = current_hydration
+
+    # Track mental lost (accumulate decreases, ignore recovery)
+    if "mental" in gameData:
+        var current_mental = gameData.mental
+        if current_mental < _acc_last_mental:
+            _acc_mental_lost += _acc_last_mental - current_mental
+        _acc_last_mental = current_mental
 
     # Track conditions
     for key in CONDITIONS:
         if key in gameData and gameData.get(key) and key not in _acc_conditions:
             _acc_conditions.append(key)
 
-    # Track items picked up (inventory count increases)
+    # Track items picked up (count actual Item nodes, not all grid children)
     var inv_count = _get_inv_count()
     if !_inv_snapshot_ready and inv_count > 0:
-        # First time we see the inventory — set baseline, don't count existing items
         _snap_inv_count = inv_count
         _acc_last_inv_count = inv_count
         _snap_inv_value = _get_inv_value()
         _inv_snapshot_ready = true
     elif _inv_snapshot_ready and inv_count > _acc_last_inv_count:
         _acc_items_picked += inv_count - _acc_last_inv_count
-    _acc_last_inv_count = inv_count
+    if inv_count > 0:
+        _acc_last_inv_count = inv_count
 
 func _check_run_end():
     # Death
@@ -272,9 +303,9 @@ func _end_run(died: bool):
         "damage_taken": int(_acc_damage_taken),
         "items_picked": _acc_items_picked,
         "value_gained": int(_get_inv_value() - _snap_inv_value) if !died else 0,
-        "energy_used": int(_snap_energy - gameData.energy),
-        "hydration_used": int(_snap_hydration - gameData.hydration),
-        "mental_lost": int(_snap_mental - (gameData.mental if "mental" in gameData else 100.0)),
+        "energy_used": int(_acc_energy_used),
+        "hydration_used": int(_acc_hydration_used),
+        "mental_lost": int(_acc_mental_lost),
         "conditions": _acc_conditions.duplicate(),
         "cash_earned": _acc_cash_earned,
         "cash_spent": _acc_cash_spent,
@@ -308,7 +339,11 @@ func _get_inv_value() -> float:
 
 func _get_inv_count() -> int:
     if _interface and _interface.get("inventoryGrid"):
-        return _interface.inventoryGrid.get_child_count()
+        var count = 0
+        for child in _interface.inventoryGrid.get_children():
+            if child.get("slotData") != null:
+                count += 1
+        return count
     return 0
 
 func _get_sim_time() -> float:
