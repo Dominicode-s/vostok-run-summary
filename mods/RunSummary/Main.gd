@@ -448,7 +448,7 @@ func _build_modal(summary: Dictionary):
     # Title
     var is_death = summary.get("outcome", "") == "DEATH"
     var title = Label.new()
-    title.text = "☠  DEATH SUMMARY" if is_death else "✓  RUN SUMMARY"
+    title.text = "DEATH SUMMARY" if is_death else "RUN SUMMARY"
     title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     title.add_theme_font_size_override("font_size", 22)
     title.add_theme_color_override("font_color", Color(1.0, 0.35, 0.35) if is_death else Color(0.4, 1.0, 0.5))
@@ -611,7 +611,7 @@ func _build_history_view():
     scroll.add_child(vbox)
 
     var title = Label.new()
-    title.text = "📋  RUN HISTORY"
+    title.text = "RUN HISTORY"
     title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     title.add_theme_font_size_override("font_size", 22)
     title.add_theme_color_override("font_color", Color(0.7, 0.8, 1.0))
@@ -661,7 +661,7 @@ func _add_history_entry(parent: VBoxContainer, run: Dictionary, index: int):
     parent.add_child(header)
 
     var outcome_label = Label.new()
-    outcome_label.text = ("☠ " if is_death else "✓ ") + run.get("outcome", "?")
+    outcome_label.text = run.get("outcome", "?")
     outcome_label.add_theme_color_override("font_color", color)
     outcome_label.add_theme_font_size_override("font_size", 15)
     outcome_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
