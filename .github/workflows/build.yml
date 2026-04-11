@@ -1,0 +1,50 @@
+name: Build VMZ
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read mod version
+        id: version
+        run: |
+          VERSION=$(grep '^version=' mod.txt | head -1 | cut -d'"' -f2)
+          NAME=$(grep '^name=' mod.txt | head -1 | cut -d'"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+
+      - name: Build VMZ
+        run: |
+          zip -r "Run-Summary.vmz" mod.txt mods/ CHANGELOG.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Run-Summary-v${{ steps.version.outputs.version }}
+          path: Run-Summary.vmz
+
+      - name: Extract changelog
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: changelog
+        run: |
+          NOTES=$(awk '/^### /{if(found) exit; found=1; next} found' CHANGELOG.md)
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Run Summary ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.notes }}
+          files: Run-Summary.vmz

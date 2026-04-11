@@ -1,0 +1,7 @@
+[mod]
+name="Run Summary"
+id="run-summary"
+version="1.0.0"
+priority=0
+[autoload]
+RunSummaryMain="res://mods/RunSummary/Main.gd"

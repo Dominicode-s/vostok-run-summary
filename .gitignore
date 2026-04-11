@@ -1,0 +1,11 @@
+# Build output
+*.vmz
+*.zip
+
+# Godot
+.godot/
+*.import
+
+# OS
+Thumbs.db
+.DS_Store
