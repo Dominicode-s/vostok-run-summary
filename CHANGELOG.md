@@ -2,6 +2,10 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.1.2
+- Fixed kills not being tracked — `isFiring` timing race condition in game's physics frame
+- Kill detection now checks `Input.is_action_pressed("fire")` for reliable same-frame attribution
+
 ## v1.1.1
 
 - Added `type` and `default_type` fields to MCM Keycode entry per MCM docs
