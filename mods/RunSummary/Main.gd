@@ -35,10 +35,13 @@ var _acc_damage_taken: float = 0.0
 var _acc_last_health: float = 100.0
 var _acc_energy_used: float = 0.0
 var _acc_last_energy: float = 100.0
+var _acc_energy_restored: float = 0.0
 var _acc_hydration_used: float = 0.0
 var _acc_last_hydration: float = 100.0
+var _acc_hydration_restored: float = 0.0
 var _acc_mental_lost: float = 0.0
 var _acc_last_mental: float = 100.0
+var _acc_mental_restored: float = 0.0
 var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
@@ -205,10 +208,13 @@ func _start_run(scene):
     _acc_last_health = gameData.health
     _acc_energy_used = 0.0
     _acc_last_energy = gameData.energy
+    _acc_energy_restored = 0.0
     _acc_hydration_used = 0.0
     _acc_last_hydration = gameData.hydration
+    _acc_hydration_restored = 0.0
     _acc_mental_lost = 0.0
     _acc_last_mental = gameData.mental if "mental" in gameData else 100.0
+    _acc_mental_restored = 0.0
     _acc_items_picked = 0
     _acc_last_inv_count = _snap_inv_count
     _inv_snapshot_ready = _snap_inv_count > 0
@@ -231,23 +237,29 @@ func _track_run():
         _acc_damage_taken += _acc_last_health - current_hp
     _acc_last_health = current_hp
 
-    # Track energy consumed (accumulate decreases, ignore eating)
+    # Track energy (accumulate drain and restoration separately)
     var current_energy = gameData.energy
     if current_energy < _acc_last_energy:
         _acc_energy_used += _acc_last_energy - current_energy
+    elif current_energy > _acc_last_energy:
+        _acc_energy_restored += current_energy - _acc_last_energy
     _acc_last_energy = current_energy
 
-    # Track hydration consumed (accumulate decreases, ignore drinking)
+    # Track hydration (accumulate drain and restoration separately)
     var current_hydration = gameData.hydration
     if current_hydration < _acc_last_hydration:
         _acc_hydration_used += _acc_last_hydration - current_hydration
+    elif current_hydration > _acc_last_hydration:
+        _acc_hydration_restored += current_hydration - _acc_last_hydration
     _acc_last_hydration = current_hydration
 
-    # Track mental lost (accumulate decreases, ignore recovery)
+    # Track mental (accumulate loss and recovery separately)
     if "mental" in gameData:
         var current_mental = gameData.mental
         if current_mental < _acc_last_mental:
             _acc_mental_lost += _acc_last_mental - current_mental
+        elif current_mental > _acc_last_mental:
+            _acc_mental_restored += current_mental - _acc_last_mental
         _acc_last_mental = current_mental
 
     # Track conditions
@@ -303,9 +315,12 @@ func _end_run(died: bool):
         "damage_taken": int(_acc_damage_taken),
         "items_picked": _acc_items_picked,
         "value_gained": int(_get_inv_value() - _snap_inv_value) if !died else 0,
-        "energy_used": int(_acc_energy_used),
-        "hydration_used": int(_acc_hydration_used),
-        "mental_lost": int(_acc_mental_lost),
+        "energy_used": int(round(_acc_energy_used)),
+        "energy_restored": int(round(_acc_energy_restored)),
+        "hydration_used": int(round(_acc_hydration_used)),
+        "hydration_restored": int(round(_acc_hydration_restored)),
+        "mental_lost": int(round(_acc_mental_lost)),
+        "mental_restored": int(round(_acc_mental_restored)),
         "conditions": _acc_conditions.duplicate(),
         "cash_earned": _acc_cash_earned,
         "cash_spent": _acc_cash_spent,
@@ -494,11 +509,22 @@ func _build_modal(summary: Dictionary):
 
     # ─── Survival ───
     _add_section_header(vbox, "SURVIVAL")
-    _add_stat_row(vbox, "Food Consumed", str(summary.get("energy_used", 0)) + "%")
-    _add_stat_row(vbox, "Water Consumed", str(summary.get("hydration_used", 0)) + "%")
-    var mental = summary.get("mental_lost", 0)
-    if mental > 0:
-        _add_stat_row(vbox, "Mental Lost", str(mental) + "%")
+    var energy_drain = summary.get("energy_used", 0)
+    var energy_gain = summary.get("energy_restored", 0)
+    _add_stat_row(vbox, "Energy Drain", "-%s%%" % str(energy_drain))
+    if energy_gain > 0:
+        _add_stat_row(vbox, "Energy Restored", "+%s%%" % str(energy_gain))
+    var hydro_drain = summary.get("hydration_used", 0)
+    var hydro_gain = summary.get("hydration_restored", 0)
+    _add_stat_row(vbox, "Hydration Drain", "-%s%%" % str(hydro_drain))
+    if hydro_gain > 0:
+        _add_stat_row(vbox, "Hydration Restored", "+%s%%" % str(hydro_gain))
+    var mental_lost = summary.get("mental_lost", 0)
+    var mental_gain = summary.get("mental_restored", 0)
+    if mental_lost > 0:
+        _add_stat_row(vbox, "Mental Lost", "-%s%%" % str(mental_lost))
+    if mental_gain > 0:
+        _add_stat_row(vbox, "Mental Restored", "+%s%%" % str(mental_gain))
     var conds = summary.get("conditions", [])
     if conds.size() > 0:
         var cond_names = []
