@@ -35,6 +35,7 @@ var _acc_damage_taken: float = 0.0
 var _acc_last_health: float = 100.0
 var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
+var _inv_snapshot_ready: bool = false
 
 # ─── Scene Tracking ───
 
@@ -50,6 +51,7 @@ var _overlay: ColorRect = null
 var _modal_visible: bool = false
 var _history_visible: bool = false
 var _last_summary: Dictionary = {}
+var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
 
 # ─── Config ───
 
@@ -182,6 +184,7 @@ func _start_run(scene):
     _acc_last_health = gameData.health
     _acc_items_picked = 0
     _acc_last_inv_count = _snap_inv_count
+    _inv_snapshot_ready = _snap_inv_count > 0
 
     _was_dead = false
     _was_shelter = false
@@ -202,7 +205,13 @@ func _track_run():
 
     # Track items picked up (inventory count increases)
     var inv_count = _get_inv_count()
-    if inv_count > _acc_last_inv_count:
+    if !_inv_snapshot_ready and inv_count > 0:
+        # First time we see the inventory — set baseline, don't count existing items
+        _snap_inv_count = inv_count
+        _acc_last_inv_count = inv_count
+        _snap_inv_value = _get_inv_value()
+        _inv_snapshot_ready = true
+    elif _inv_snapshot_ready and inv_count > _acc_last_inv_count:
         _acc_items_picked += inv_count - _acc_last_inv_count
     _acc_last_inv_count = inv_count
 
@@ -303,6 +312,8 @@ func _show_summary_modal():
 
     _modal_visible = true
     _history_visible = false
+    _prev_mouse_mode = Input.mouse_mode
+    Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
     _build_modal(_last_summary)
 
 func _build_modal(summary: Dictionary):
@@ -450,6 +461,7 @@ func _close_modal():
     _modal_visible = false
     _history_visible = false
     _cleanup_modal()
+    Input.mouse_mode = _prev_mouse_mode
     # Allow starting a new run
     if _run_state == RunState.RUN_ENDED:
         _run_state = RunState.IDLE
