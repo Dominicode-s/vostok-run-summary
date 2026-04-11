@@ -115,6 +115,10 @@ func _on_cash_picked_up(amount: int):
 # ─── Main Loop ───
 
 func _process(_delta):
+    # Keep mouse visible while modal is open (game may override each frame)
+    if _modal_visible and Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+        Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
     _update_interface()
     if _interface == null:
         return
@@ -306,15 +310,20 @@ func _get_sim_time() -> float:
 # ─── Input ───
 
 func _input(event):
-    if event is InputEventKey and event.pressed and not event.echo:
-        if _modal_visible and event.keycode == KEY_ESCAPE:
-            _close_modal()
-            get_viewport().set_input_as_handled()
-        elif event.is_action_pressed(REOPEN_ACTION) and _last_summary.size() > 0:
-            if _modal_visible:
+    # Block ALL input from reaching the game while modal is open
+    if _modal_visible:
+        if event is InputEventKey and event.pressed and not event.echo:
+            if event.keycode == KEY_ESCAPE:
                 _close_modal()
-            else:
-                _show_summary_modal()
+            elif event.is_action_pressed(REOPEN_ACTION):
+                _close_modal()
+        get_viewport().set_input_as_handled()
+        return
+
+    # Hotkey to reopen last summary (only when modal is closed)
+    if event is InputEventKey and event.pressed and not event.echo:
+        if event.is_action_pressed(REOPEN_ACTION) and _last_summary.size() > 0:
+            _show_summary_modal()
             get_viewport().set_input_as_handled()
 
 # ─── Summary Modal UI ───
