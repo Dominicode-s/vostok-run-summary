@@ -2,6 +2,13 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.0.1
+
+- Added ModWorkshop update detection link
+- Added README with install instructions and feature overview
+- Fixed scrollbar overlapping stat values
+- Included README in VMZ package
+
 ## v1.0.0
 
 ### Features
