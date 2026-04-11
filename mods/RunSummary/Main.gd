@@ -456,9 +456,15 @@ func _build_modal(summary: Dictionary):
     scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
     panel.add_child(scroll)
 
+    # Margin inside scroll to prevent scrollbar from overlapping content
+    var scroll_margin = MarginContainer.new()
+    scroll_margin.add_theme_constant_override("margin_right", 14)
+    scroll_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.add_child(scroll_margin)
+
     var vbox = VBoxContainer.new()
     vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.add_child(vbox)
+    scroll_margin.add_child(vbox)
 
     # Title
     var is_death = summary.get("outcome", "") == "DEATH"
@@ -632,9 +638,14 @@ func _build_history_view():
     scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
     panel.add_child(scroll)
 
+    var scroll_margin = MarginContainer.new()
+    scroll_margin.add_theme_constant_override("margin_right", 14)
+    scroll_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.add_child(scroll_margin)
+
     var vbox = VBoxContainer.new()
     vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.add_child(vbox)
+    scroll_margin.add_child(vbox)
 
     var title = Label.new()
     title.text = "RUN HISTORY"
