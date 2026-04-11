@@ -36,6 +36,7 @@ var _acc_last_health: float = 100.0
 var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
+var _acc_peak_xp: int = 0
 
 # ─── Scene Tracking ───
 
@@ -164,7 +165,7 @@ func _check_run_start():
 
 func _start_run(scene):
     _run_state = RunState.IN_RUN
-    _snap_xp_total = gameData.xpTotal if "xpTotal" in gameData else 0
+    _snap_xp_total = _get_xp_total()
     _snap_health = gameData.health
     _snap_energy = gameData.energy
     _snap_hydration = gameData.hydration
@@ -185,6 +186,7 @@ func _start_run(scene):
     _acc_items_picked = 0
     _acc_last_inv_count = _snap_inv_count
     _inv_snapshot_ready = _snap_inv_count > 0
+    _acc_peak_xp = _snap_xp_total
 
     _was_dead = false
     _was_shelter = false
@@ -192,6 +194,11 @@ func _start_run(scene):
     print("[RunSummary] Run started on %s" % _snap_map)
 
 func _track_run():
+    # Track XP high-water mark (death resets gameData before _end_run)
+    var current_xp = _get_xp_total()
+    if current_xp > _acc_peak_xp:
+        _acc_peak_xp = current_xp
+
     # Track damage taken (health decreases)
     var current_hp = gameData.health
     if current_hp < _acc_last_health:
@@ -233,8 +240,7 @@ func _end_run(died: bool):
     _run_state = RunState.RUN_ENDED
 
     var elapsed_ms = Time.get_ticks_msec() - _snap_time_real
-    var xp_now = gameData.xpTotal if "xpTotal" in gameData else 0
-    var xp_delta = xp_now - _snap_xp_total
+    var xp_delta = _acc_peak_xp - _snap_xp_total
 
     # Estimate kills from XP (vanilla: 25 per kill, 100 per boss)
     # Only use XP-based estimate if we didn't get signal-based counts
@@ -271,6 +277,15 @@ func _end_run(died: bool):
         get_tree().create_timer(1.5).timeout.connect(_show_summary_modal)
 
 # ─── Helpers ───
+
+func _get_xp_total() -> int:
+    # Prefer XP mod's own tracker (separate from gameData)
+    var xp_mod = Engine.get_meta("XPMain", null)
+    if xp_mod and "xpTotal" in xp_mod:
+        return xp_mod.xpTotal
+    if "xpTotal" in gameData:
+        return gameData.xpTotal
+    return 0
 
 func _get_inv_value() -> float:
     if _interface and "currentInventoryValue" in _interface:
