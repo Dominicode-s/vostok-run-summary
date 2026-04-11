@@ -54,7 +54,6 @@ var _modal_visible: bool = false
 var _history_visible: bool = false
 var _last_summary: Dictionary = {}
 var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
-var _prev_freeze: bool = false
 
 # ─── Config ───
 
@@ -91,6 +90,10 @@ func _ready():
         _load_local_config()
     _register_hotkey(cfg_reopen_key)
     _hook_other_mods()
+    # Load most recent run from history so hotkey works before first run
+    var history = _load_history()
+    if history.size() > 0:
+        _last_summary = history[0]
 
 func _hook_other_mods():
     var cash_mod = Engine.get_meta("CashMain", null)
@@ -352,7 +355,6 @@ func _show_summary_modal():
     _modal_visible = true
     _history_visible = false
     _prev_mouse_mode = Input.mouse_mode
-    _prev_freeze = gameData.freeze if "freeze" in gameData else false
 
     # Match the game's own UI pattern (UIManager.UIOpen)
     Input.mouse_mode = Input.MOUSE_MODE_CONFINED
@@ -518,8 +520,9 @@ func _close_modal():
         _canvas_layer.queue_free()
         _canvas_layer = null
     Input.mouse_mode = _prev_mouse_mode
+    # Always unfreeze on close (matches game's UIManager.UIClose pattern)
     if "freeze" in gameData:
-        gameData.freeze = _prev_freeze
+        gameData.freeze = false
     # Allow starting a new run
     if _run_state == RunState.RUN_ENDED:
         _run_state = RunState.IDLE
