@@ -5,3 +5,5 @@ version="1.0.0"
 priority=0
 [autoload]
 RunSummaryMain="res://mods/RunSummary/Main.gd"
+[updates]
+modworkshop=56019
