@@ -33,8 +33,19 @@ var _acc_cash_spent: int = 0
 var _acc_conditions: Array = []
 var _acc_damage_taken: float = 0.0
 var _acc_last_health: float = 100.0
+var _acc_energy_used: float = 0.0
+var _acc_last_energy: float = 100.0
+var _acc_energy_restored: float = 0.0
+var _acc_hydration_used: float = 0.0
+var _acc_last_hydration: float = 100.0
+var _acc_hydration_restored: float = 0.0
+var _acc_mental_lost: float = 0.0
+var _acc_last_mental: float = 100.0
+var _acc_mental_restored: float = 0.0
 var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
+var _inv_snapshot_ready: bool = false
+var _acc_peak_xp: int = 0
 
 # ─── Scene Tracking ───
 
@@ -46,10 +57,12 @@ var _scene_ready: bool = false
 
 # ─── UI ───
 
+var _canvas_layer: CanvasLayer = null
 var _overlay: ColorRect = null
 var _modal_visible: bool = false
 var _history_visible: bool = false
 var _last_summary: Dictionary = {}
+var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
 
 # ─── Config ───
 
@@ -77,6 +90,7 @@ const CONDITIONS = {
 # ─── Initialization ───
 
 func _ready():
+    process_mode = Node.PROCESS_MODE_ALWAYS
     Engine.set_meta("RunSummaryMain", self)
     _mcm_helpers = _try_load_mcm()
     if _mcm_helpers:
@@ -85,6 +99,10 @@ func _ready():
         _load_local_config()
     _register_hotkey(cfg_reopen_key)
     _hook_other_mods()
+    # Load most recent run from history so hotkey works before first run
+    var history = _load_history()
+    if history.size() > 0:
+        _last_summary = history[0]
 
 func _hook_other_mods():
     var cash_mod = Engine.get_meta("CashMain", null)
@@ -112,6 +130,14 @@ func _on_cash_picked_up(amount: int):
 # ─── Main Loop ───
 
 func _process(_delta):
+    # Enforce game state every frame while modal is open
+    # (game scripts may reset freeze/mouse_mode during scene transitions)
+    if _modal_visible:
+        if Input.mouse_mode != Input.MOUSE_MODE_CONFINED:
+            Input.mouse_mode = Input.MOUSE_MODE_CONFINED
+        if "freeze" in gameData and not gameData.freeze:
+            gameData.freeze = true
+
     _update_interface()
     if _interface == null:
         return
@@ -162,7 +188,7 @@ func _check_run_start():
 
 func _start_run(scene):
     _run_state = RunState.IN_RUN
-    _snap_xp_total = gameData.xpTotal if "xpTotal" in gameData else 0
+    _snap_xp_total = _get_xp_total()
     _snap_health = gameData.health
     _snap_energy = gameData.energy
     _snap_hydration = gameData.hydration
@@ -180,8 +206,19 @@ func _start_run(scene):
     _acc_conditions = []
     _acc_damage_taken = 0.0
     _acc_last_health = gameData.health
+    _acc_energy_used = 0.0
+    _acc_last_energy = gameData.energy
+    _acc_energy_restored = 0.0
+    _acc_hydration_used = 0.0
+    _acc_last_hydration = gameData.hydration
+    _acc_hydration_restored = 0.0
+    _acc_mental_lost = 0.0
+    _acc_last_mental = gameData.mental if "mental" in gameData else 100.0
+    _acc_mental_restored = 0.0
     _acc_items_picked = 0
     _acc_last_inv_count = _snap_inv_count
+    _inv_snapshot_ready = _snap_inv_count > 0
+    _acc_peak_xp = _snap_xp_total
 
     _was_dead = false
     _was_shelter = false
@@ -189,22 +226,58 @@ func _start_run(scene):
     print("[RunSummary] Run started on %s" % _snap_map)
 
 func _track_run():
-    # Track damage taken (health decreases)
+    # Track XP high-water mark (death resets gameData before _end_run)
+    var current_xp = _get_xp_total()
+    if current_xp > _acc_peak_xp:
+        _acc_peak_xp = current_xp
+
+    # Track damage taken (accumulate decreases, ignore healing)
     var current_hp = gameData.health
     if current_hp < _acc_last_health:
         _acc_damage_taken += _acc_last_health - current_hp
     _acc_last_health = current_hp
+
+    # Track energy (accumulate drain and restoration separately)
+    var current_energy = gameData.energy
+    if current_energy < _acc_last_energy:
+        _acc_energy_used += _acc_last_energy - current_energy
+    elif current_energy > _acc_last_energy:
+        _acc_energy_restored += current_energy - _acc_last_energy
+    _acc_last_energy = current_energy
+
+    # Track hydration (accumulate drain and restoration separately)
+    var current_hydration = gameData.hydration
+    if current_hydration < _acc_last_hydration:
+        _acc_hydration_used += _acc_last_hydration - current_hydration
+    elif current_hydration > _acc_last_hydration:
+        _acc_hydration_restored += current_hydration - _acc_last_hydration
+    _acc_last_hydration = current_hydration
+
+    # Track mental (accumulate loss and recovery separately)
+    if "mental" in gameData:
+        var current_mental = gameData.mental
+        if current_mental < _acc_last_mental:
+            _acc_mental_lost += _acc_last_mental - current_mental
+        elif current_mental > _acc_last_mental:
+            _acc_mental_restored += current_mental - _acc_last_mental
+        _acc_last_mental = current_mental
 
     # Track conditions
     for key in CONDITIONS:
         if key in gameData and gameData.get(key) and key not in _acc_conditions:
             _acc_conditions.append(key)
 
-    # Track items picked up (inventory count increases)
+    # Track items picked up (count actual Item nodes, not all grid children)
     var inv_count = _get_inv_count()
-    if inv_count > _acc_last_inv_count:
+    if !_inv_snapshot_ready and inv_count > 0:
+        _snap_inv_count = inv_count
+        _acc_last_inv_count = inv_count
+        _snap_inv_value = _get_inv_value()
+        _inv_snapshot_ready = true
+    elif _inv_snapshot_ready and inv_count > _acc_last_inv_count:
         _acc_items_picked += inv_count - _acc_last_inv_count
-    _acc_last_inv_count = inv_count
+    if inv_count > 0:
+        _acc_last_inv_count = inv_count
 
 func _check_run_end():
     # Death
@@ -224,8 +297,7 @@ func _end_run(died: bool):
     _run_state = RunState.RUN_ENDED
 
     var elapsed_ms = Time.get_ticks_msec() - _snap_time_real
-    var xp_now = gameData.xpTotal if "xpTotal" in gameData else 0
-    var xp_delta = xp_now - _snap_xp_total
+    var xp_delta = _acc_peak_xp - _snap_xp_total
 
     # Estimate kills from XP (vanilla: 25 per kill, 100 per boss)
     # Only use XP-based estimate if we didn't get signal-based counts
@@ -243,9 +315,12 @@ func _end_run(died: bool):
         "damage_taken": int(_acc_damage_taken),
         "items_picked": _acc_items_picked,
         "value_gained": int(_get_inv_value() - _snap_inv_value) if !died else 0,
-        "energy_used": int(_snap_energy - gameData.energy),
-        "hydration_used": int(_snap_hydration - gameData.hydration),
-        "mental_lost": int(_snap_mental - (gameData.mental if "mental" in gameData else 100.0)),
+        "energy_used": int(round(_acc_energy_used)),
+        "energy_restored": int(round(_acc_energy_restored)),
+        "hydration_used": int(round(_acc_hydration_used)),
+        "hydration_restored": int(round(_acc_hydration_restored)),
+        "mental_lost": int(round(_acc_mental_lost)),
+        "mental_restored": int(round(_acc_mental_restored)),
         "conditions": _acc_conditions.duplicate(),
         "cash_earned": _acc_cash_earned,
         "cash_spent": _acc_cash_spent,
@@ -263,6 +338,15 @@ func _end_run(died: bool):
 
 # ─── Helpers ───
 
+func _get_xp_total() -> int:
+    # Prefer XP mod's own tracker (separate from gameData)
+    var xp_mod = Engine.get_meta("XPMain", null)
+    if xp_mod and "xpTotal" in xp_mod:
+        return xp_mod.xpTotal
+    if "xpTotal" in gameData:
+        return gameData.xpTotal
+    return 0
+
 func _get_inv_value() -> float:
     if _interface and "currentInventoryValue" in _interface:
         return _interface.currentInventoryValue
@@ -270,7 +354,11 @@ func _get_inv_value() -> float:
 
 func _get_inv_count() -> int:
     if _interface and _interface.get("inventoryGrid"):
-        return _interface.inventoryGrid.get_child_count()
+        var count = 0
+        for child in _interface.inventoryGrid.get_children():
+            if child.get("slotData") != null:
+                count += 1
+        return count
     return 0
 
 func _get_sim_time() -> float:
@@ -282,16 +370,29 @@ func _get_sim_time() -> float:
 # ─── Input ───
 
 func _input(event):
-    if event is InputEventKey and event.pressed and not event.echo:
-        if _modal_visible and event.keycode == KEY_ESCAPE:
-            _close_modal()
-            get_viewport().set_input_as_handled()
-        elif event.is_action_pressed(REOPEN_ACTION) and _last_summary.size() > 0:
-            if _modal_visible:
+    if _modal_visible:
+        # Esc or hotkey (by keycode) closes modal
+        if event is InputEventKey and event.pressed and not event.echo:
+            if event.keycode == KEY_ESCAPE or event.keycode == cfg_reopen_key:
                 _close_modal()
-            else:
-                _show_summary_modal()
+                get_viewport().set_input_as_handled()
+                return
+        # Block mouse motion and keyboard from reaching the game
+        # Do NOT block mouse buttons — they must reach our CanvasLayer GUI
+        if event is InputEventMouseMotion or event is InputEventKey:
             get_viewport().set_input_as_handled()
+        return
+
+    # Hotkey to reopen last summary (only when modal is closed)
+    if event is InputEventKey and event.pressed and not event.echo:
+        if event.keycode == cfg_reopen_key and _last_summary.size() > 0:
+            _show_summary_modal()
+            get_viewport().set_input_as_handled()
+
+func _unhandled_input(event):
+    # Catch any mouse clicks that passed through GUI (clicked overlay, not a button)
+    if _modal_visible and event is InputEventMouseButton:
+        get_viewport().set_input_as_handled()
 
 # ─── Summary Modal UI ───
 
@@ -303,6 +404,20 @@ func _show_summary_modal():
 
     _modal_visible = true
     _history_visible = false
+    _prev_mouse_mode = Input.mouse_mode
+
+    # Match the game's own UI pattern (UIManager.UIOpen)
+    Input.mouse_mode = Input.MOUSE_MODE_CONFINED
+    if "freeze" in gameData:
+        gameData.freeze = true
+
+    # CanvasLayer on a high layer ensures our UI gets GUI events above everything
+    _canvas_layer = CanvasLayer.new()
+    _canvas_layer.name = "RunSummaryLayer"
+    _canvas_layer.layer = 100
+    _canvas_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+    get_tree().root.add_child(_canvas_layer)
+
     _build_modal(_last_summary)
 
 func _build_modal(summary: Dictionary):
@@ -315,7 +430,7 @@ func _build_modal(summary: Dictionary):
     _overlay.anchor_right = 1.0
     _overlay.anchor_bottom = 1.0
     _overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-    get_tree().root.add_child(_overlay)
+    _canvas_layer.add_child(_overlay)
 
     # Centered panel
     var panel = PanelContainer.new()
@@ -341,14 +456,20 @@ func _build_modal(summary: Dictionary):
     scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
     panel.add_child(scroll)
 
+    # Margin inside scroll to prevent scrollbar from overlapping content
+    var scroll_margin = MarginContainer.new()
+    scroll_margin.add_theme_constant_override("margin_right", 14)
+    scroll_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.add_child(scroll_margin)
+
     var vbox = VBoxContainer.new()
     vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.add_child(vbox)
+    scroll_margin.add_child(vbox)
 
     # Title
     var is_death = summary.get("outcome", "") == "DEATH"
     var title = Label.new()
-    title.text = "☠  DEATH SUMMARY" if is_death else "✓  RUN SUMMARY"
+    title.text = "DEATH SUMMARY" if is_death else "RUN SUMMARY"
     title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     title.add_theme_font_size_override("font_size", 22)
     title.add_theme_color_override("font_color", Color(1.0, 0.35, 0.35) if is_death else Color(0.4, 1.0, 0.5))
@@ -394,11 +515,22 @@ func _build_modal(summary: Dictionary):
 
     # ─── Survival ───
     _add_section_header(vbox, "SURVIVAL")
-    _add_stat_row(vbox, "Food Consumed", str(summary.get("energy_used", 0)) + "%")
-    _add_stat_row(vbox, "Water Consumed", str(summary.get("hydration_used", 0)) + "%")
-    var mental = summary.get("mental_lost", 0)
-    if mental > 0:
-        _add_stat_row(vbox, "Mental Lost", str(mental) + "%")
+    var energy_drain = summary.get("energy_used", 0)
+    var energy_gain = summary.get("energy_restored", 0)
+    _add_stat_row(vbox, "Energy Drain", "-%s%%" % str(energy_drain))
+    if energy_gain > 0:
+        _add_stat_row(vbox, "Energy Restored", "+%s%%" % str(energy_gain))
+    var hydro_drain = summary.get("hydration_used", 0)
+    var hydro_gain = summary.get("hydration_restored", 0)
+    _add_stat_row(vbox, "Hydration Drain", "-%s%%" % str(hydro_drain))
+    if hydro_gain > 0:
+        _add_stat_row(vbox, "Hydration Restored", "+%s%%" % str(hydro_gain))
+    var mental_lost = summary.get("mental_lost", 0)
+    var mental_gain = summary.get("mental_restored", 0)
+    if mental_lost > 0:
+        _add_stat_row(vbox, "Mental Lost", "-%s%%" % str(mental_lost))
+    if mental_gain > 0:
+        _add_stat_row(vbox, "Mental Restored", "+%s%%" % str(mental_gain))
     var conds = summary.get("conditions", [])
     if conds.size() > 0:
         var cond_names = []
@@ -450,6 +582,14 @@ func _close_modal():
     _modal_visible = false
     _history_visible = false
     _cleanup_modal()
+    # Also free the canvas layer
+    if _canvas_layer and is_instance_valid(_canvas_layer):
+        _canvas_layer.queue_free()
+        _canvas_layer = null
+    Input.mouse_mode = _prev_mouse_mode
+    # Always unfreeze on close (matches game's UIManager.UIClose pattern)
+    if "freeze" in gameData:
+        gameData.freeze = false
     # Allow starting a new run
     if _run_state == RunState.RUN_ENDED:
         _run_state = RunState.IDLE
@@ -474,7 +614,7 @@ func _build_history_view():
     _overlay.anchor_right = 1.0
     _overlay.anchor_bottom = 1.0
     _overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-    get_tree().root.add_child(_overlay)
+    _canvas_layer.add_child(_overlay)
 
     var panel = PanelContainer.new()
     var panel_style = StyleBoxFlat.new()
@@ -498,12 +638,17 @@ func _build_history_view():
     scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
     panel.add_child(scroll)
 
+    var scroll_margin = MarginContainer.new()
+    scroll_margin.add_theme_constant_override("margin_right", 14)
+    scroll_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.add_child(scroll_margin)
+
     var vbox = VBoxContainer.new()
     vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.add_child(vbox)
+    scroll_margin.add_child(vbox)
 
     var title = Label.new()
-    title.text = "📋  RUN HISTORY"
+    title.text = "RUN HISTORY"
     title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     title.add_theme_font_size_override("font_size", 22)
     title.add_theme_color_override("font_color", Color(0.7, 0.8, 1.0))
@@ -553,7 +698,7 @@ func _add_history_entry(parent: VBoxContainer, run: Dictionary, index: int):
     parent.add_child(header)
 
     var outcome_label = Label.new()
-    outcome_label.text = ("☠ " if is_death else "✓ ") + run.get("outcome", "?")
+    outcome_label.text = run.get("outcome", "?")
     outcome_label.add_theme_color_override("font_color", color)
     outcome_label.add_theme_font_size_override("font_size", 15)
     outcome_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
