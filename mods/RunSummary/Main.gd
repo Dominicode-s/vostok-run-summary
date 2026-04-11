@@ -934,7 +934,8 @@ func _register_mcm():
     config.set_value("Keycode", "cfg_reopen_key", {
         "name" = "Reopen Summary Hotkey",
         "tooltip" = "Press to reopen the last run summary",
-        "default" = KEY_F6, "value" = KEY_F6,
+        "default" = KEY_F6, "default_type" = "Key",
+        "value" = KEY_F6, "type" = "Key",
         "menu_pos" = 2
     })
 

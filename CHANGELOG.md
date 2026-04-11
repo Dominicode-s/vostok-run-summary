@@ -2,6 +2,10 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.1.1
+
+- Added `type` and `default_type` fields to MCM Keycode entry per MCM docs
+
 ## v1.1.0
 
 - Real-time kill tracking — kills are now detected frame-by-frame instead of estimated from XP
