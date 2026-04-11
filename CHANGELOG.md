@@ -2,6 +2,14 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.1.0
+
+- Real-time kill tracking — kills are now detected frame-by-frame instead of estimated from XP
+- Gun kill attribution via `isFiring` check — AI-on-AI kills (Faction Warfare) no longer counted
+- Grenade kill attribution — tracks grenade throw state with a 6-second window
+- Boss kills tracked and displayed separately in combat stats
+- Works independently — no dependency on XP & Skills mod
+
 ## v1.0.1
 
 - Added ModWorkshop update detection link
