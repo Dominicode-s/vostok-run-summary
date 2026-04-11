@@ -53,6 +53,7 @@ var _modal_visible: bool = false
 var _history_visible: bool = false
 var _last_summary: Dictionary = {}
 var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
+var _prev_freeze: bool = false
 
 # ─── Config ───
 
@@ -310,14 +311,17 @@ func _get_sim_time() -> float:
 # ─── Input ───
 
 func _input(event):
-    # Block ALL input from reaching the game while modal is open
     if _modal_visible:
+        # Esc or hotkey closes modal
         if event is InputEventKey and event.pressed and not event.echo:
-            if event.keycode == KEY_ESCAPE:
+            if event.keycode == KEY_ESCAPE or event.is_action_pressed(REOPEN_ACTION):
                 _close_modal()
-            elif event.is_action_pressed(REOPEN_ACTION):
-                _close_modal()
-        get_viewport().set_input_as_handled()
+                get_viewport().set_input_as_handled()
+                return
+        # Block mouse motion (prevents camera look) and keyboard from game
+        # Do NOT block mouse buttons — they need to reach our GUI buttons
+        if event is InputEventMouseMotion or event is InputEventKey:
+            get_viewport().set_input_as_handled()
         return
 
     # Hotkey to reopen last summary (only when modal is closed)
@@ -325,6 +329,11 @@ func _input(event):
         if event.is_action_pressed(REOPEN_ACTION) and _last_summary.size() > 0:
             _show_summary_modal()
             get_viewport().set_input_as_handled()
+
+func _unhandled_input(event):
+    # Catch any mouse clicks that passed through GUI (clicked overlay, not a button)
+    if _modal_visible and event is InputEventMouseButton:
+        get_viewport().set_input_as_handled()
 
 # ─── Summary Modal UI ───
 
@@ -337,7 +346,10 @@ func _show_summary_modal():
     _modal_visible = true
     _history_visible = false
     _prev_mouse_mode = Input.mouse_mode
+    _prev_freeze = gameData.freeze if "freeze" in gameData else false
     Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+    if "freeze" in gameData:
+        gameData.freeze = true
     _build_modal(_last_summary)
 
 func _build_modal(summary: Dictionary):
@@ -486,6 +498,8 @@ func _close_modal():
     _history_visible = false
     _cleanup_modal()
     Input.mouse_mode = _prev_mouse_mode
+    if "freeze" in gameData:
+        gameData.freeze = _prev_freeze
     # Allow starting a new run
     if _run_state == RunState.RUN_ENDED:
         _run_state = RunState.IDLE
