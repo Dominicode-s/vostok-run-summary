@@ -258,8 +258,11 @@ func _track_run():
     if xp_delta_frame > 0:
         var is_player_kill = false
 
-        # Gun kill: player is actively firing
-        if gameData.isFiring:
+        # Gun kill: check raw input first — isFiring has a timing issue where
+        # FireImpulse() runs AFTER Raycast→Death in the same physics frame
+        if Input.is_action_pressed("fire"):
+            is_player_kill = true
+        elif gameData.isFiring:
             is_player_kill = true
         # Grenade kill: player recently threw a grenade
         elif _last_grenade_time > 0 and (Time.get_ticks_msec() - _last_grenade_time) <= GRENADE_WINDOW_MS:
