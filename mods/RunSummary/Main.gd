@@ -46,6 +46,15 @@ var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
 var _acc_peak_xp: int = 0
+var _acc_last_xp: int = 0
+var _acc_boss_kills: int = 0
+
+# ─── Kill Attribution ───
+
+const GRENADE_WINDOW_MS: int = 6000  # 6s covers 3s fuse + travel + buffer
+var _last_grenade_time: int = 0
+var _prev_grenade1: bool = false
+var _prev_grenade2: bool = false
 
 # ─── Scene Tracking ───
 
@@ -201,6 +210,11 @@ func _start_run(scene):
     _snap_inv_count = _get_inv_count()
 
     _acc_kills = 0
+    _acc_boss_kills = 0
+    _acc_last_xp = _snap_xp_total
+    _last_grenade_time = 0
+    _prev_grenade1 = gameData.grenade1 if "grenade1" in gameData else false
+    _prev_grenade2 = gameData.grenade2 if "grenade2" in gameData else false
     _acc_cash_earned = 0
     _acc_cash_spent = 0
     _acc_conditions = []
@@ -226,10 +240,38 @@ func _start_run(scene):
     print("[RunSummary] Run started on %s" % _snap_map)
 
 func _track_run():
-    # Track XP high-water mark (death resets gameData before _end_run)
+    # ─── Kill detection (frame-by-frame XP monitoring) ───
     var current_xp = _get_xp_total()
     if current_xp > _acc_peak_xp:
         _acc_peak_xp = current_xp
+
+    # Detect grenade throws (grenade1/grenade2 transition true → false)
+    var g1 = gameData.grenade1 if "grenade1" in gameData else false
+    var g2 = gameData.grenade2 if "grenade2" in gameData else false
+    if (_prev_grenade1 and !g1) or (_prev_grenade2 and !g2):
+        _last_grenade_time = Time.get_ticks_msec()
+    _prev_grenade1 = g1
+    _prev_grenade2 = g2
+
+    # Check for XP increase → attribute kill
+    var xp_delta_frame = current_xp - _acc_last_xp
+    if xp_delta_frame > 0:
+        var is_player_kill = false
+
+        # Gun kill: player is actively firing
+        if gameData.isFiring:
+            is_player_kill = true
+        # Grenade kill: player recently threw a grenade
+        elif _last_grenade_time > 0 and (Time.get_ticks_msec() - _last_grenade_time) <= GRENADE_WINDOW_MS:
+            is_player_kill = true
+
+        if is_player_kill:
+            if xp_delta_frame >= 100:
+                _acc_boss_kills += 1
+                _acc_kills += 1
+            else:
+                _acc_kills += xp_delta_frame / 25
+    _acc_last_xp = current_xp
 
     # Track damage taken (accumulate decreases, ignore healing)
     var current_hp = gameData.health
@@ -299,19 +341,14 @@ func _end_run(died: bool):
     var elapsed_ms = Time.get_ticks_msec() - _snap_time_real
     var xp_delta = _acc_peak_xp - _snap_xp_total
 
-    # Estimate kills from XP (vanilla: 25 per kill, 100 per boss)
-    # Only use XP-based estimate if we didn't get signal-based counts
-    var estimated_kills = _acc_kills
-    if estimated_kills == 0 and xp_delta > 0:
-        estimated_kills = int(xp_delta / 25)
-
     var summary = {
         "outcome": "DEATH" if died else "EXTRACTED",
         "map": _snap_map,
         "zone": _snap_zone,
         "duration_sec": int(elapsed_ms / 1000),
         "xp_gained": xp_delta,
-        "kills": estimated_kills,
+        "kills": _acc_kills,
+        "boss_kills": _acc_boss_kills,
         "damage_taken": int(_acc_damage_taken),
         "items_picked": _acc_items_picked,
         "value_gained": int(_get_inv_value() - _snap_inv_value) if !died else 0,
@@ -491,6 +528,9 @@ func _build_modal(summary: Dictionary):
     # ─── Combat ───
     _add_section_header(vbox, "COMBAT")
     _add_stat_row(vbox, "Enemies Killed", str(summary.get("kills", 0)))
+    var boss_kills = summary.get("boss_kills", 0)
+    if boss_kills > 0:
+        _add_stat_row(vbox, "Bosses Killed", str(boss_kills))
     _add_stat_row(vbox, "Damage Taken", str(summary.get("damage_taken", 0)))
     _add_spacer(vbox, 8)
 
