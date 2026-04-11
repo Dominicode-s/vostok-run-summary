@@ -48,6 +48,7 @@ var _scene_ready: bool = false
 
 # ─── UI ───
 
+var _canvas_layer: CanvasLayer = null
 var _overlay: ColorRect = null
 var _modal_visible: bool = false
 var _history_visible: bool = false
@@ -81,6 +82,7 @@ const CONDITIONS = {
 # ─── Initialization ───
 
 func _ready():
+    process_mode = Node.PROCESS_MODE_ALWAYS
     Engine.set_meta("RunSummaryMain", self)
     _mcm_helpers = _try_load_mcm()
     if _mcm_helpers:
@@ -116,9 +118,13 @@ func _on_cash_picked_up(amount: int):
 # ─── Main Loop ───
 
 func _process(_delta):
-    # Keep mouse visible while modal is open (game may override each frame)
-    if _modal_visible and Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
-        Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+    # Enforce game state every frame while modal is open
+    # (game scripts may reset freeze/mouse_mode during scene transitions)
+    if _modal_visible:
+        if Input.mouse_mode != Input.MOUSE_MODE_CONFINED:
+            Input.mouse_mode = Input.MOUSE_MODE_CONFINED
+        if "freeze" in gameData and not gameData.freeze:
+            gameData.freeze = true
 
     _update_interface()
     if _interface == null:
@@ -312,21 +318,21 @@ func _get_sim_time() -> float:
 
 func _input(event):
     if _modal_visible:
-        # Esc or hotkey closes modal
+        # Esc or hotkey (by keycode) closes modal
         if event is InputEventKey and event.pressed and not event.echo:
-            if event.keycode == KEY_ESCAPE or event.is_action_pressed(REOPEN_ACTION):
+            if event.keycode == KEY_ESCAPE or event.keycode == cfg_reopen_key:
                 _close_modal()
                 get_viewport().set_input_as_handled()
                 return
-        # Block mouse motion (prevents camera look) and keyboard from game
-        # Do NOT block mouse buttons — they need to reach our GUI buttons
+        # Block mouse motion and keyboard from reaching the game
+        # Do NOT block mouse buttons — they must reach our CanvasLayer GUI
         if event is InputEventMouseMotion or event is InputEventKey:
             get_viewport().set_input_as_handled()
         return
 
     # Hotkey to reopen last summary (only when modal is closed)
     if event is InputEventKey and event.pressed and not event.echo:
-        if event.is_action_pressed(REOPEN_ACTION) and _last_summary.size() > 0:
+        if event.keycode == cfg_reopen_key and _last_summary.size() > 0:
             _show_summary_modal()
             get_viewport().set_input_as_handled()
 
@@ -347,9 +353,19 @@ func _show_summary_modal():
     _history_visible = false
     _prev_mouse_mode = Input.mouse_mode
     _prev_freeze = gameData.freeze if "freeze" in gameData else false
-    Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+    # Match the game's own UI pattern (UIManager.UIOpen)
+    Input.mouse_mode = Input.MOUSE_MODE_CONFINED
     if "freeze" in gameData:
         gameData.freeze = true
+
+    # CanvasLayer on a high layer ensures our UI gets GUI events above everything
+    _canvas_layer = CanvasLayer.new()
+    _canvas_layer.name = "RunSummaryLayer"
+    _canvas_layer.layer = 100
+    _canvas_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+    get_tree().root.add_child(_canvas_layer)
+
     _build_modal(_last_summary)
 
 func _build_modal(summary: Dictionary):
@@ -362,7 +378,7 @@ func _build_modal(summary: Dictionary):
     _overlay.anchor_right = 1.0
     _overlay.anchor_bottom = 1.0
     _overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-    get_tree().root.add_child(_overlay)
+    _canvas_layer.add_child(_overlay)
 
     # Centered panel
     var panel = PanelContainer.new()
@@ -497,6 +513,10 @@ func _close_modal():
     _modal_visible = false
     _history_visible = false
     _cleanup_modal()
+    # Also free the canvas layer
+    if _canvas_layer and is_instance_valid(_canvas_layer):
+        _canvas_layer.queue_free()
+        _canvas_layer = null
     Input.mouse_mode = _prev_mouse_mode
     if "freeze" in gameData:
         gameData.freeze = _prev_freeze
@@ -524,7 +544,7 @@ func _build_history_view():
     _overlay.anchor_right = 1.0
     _overlay.anchor_bottom = 1.0
     _overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-    get_tree().root.add_child(_overlay)
+    _canvas_layer.add_child(_overlay)
 
     var panel = PanelContainer.new()
     var panel_style = StyleBoxFlat.new()
