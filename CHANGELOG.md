@@ -2,6 +2,12 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.1.3
+- Fixed kill tracking not working without XP Skills mod — game removed built-in XP fields
+- Replaced XP-delta kill detection with direct AI death polling via node_added signal
+- Migrated UI from procedural code to .tscn scene files for easier community restyling
+- Extracted style constants (colors, font sizes) to top of Main.gd
+
 ## v1.1.2
 - Fixed kills not being tracked — `isFiring` timing race condition in game's physics frame
 - Kill detection now checks `Input.is_action_pressed("fire")` for reliable same-frame attribution

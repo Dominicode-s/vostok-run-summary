@@ -46,15 +46,17 @@ var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
 var _acc_peak_xp: int = 0
-var _acc_last_xp: int = 0
 var _acc_boss_kills: int = 0
 
 # ─── Kill Attribution ───
 
+const FIRE_WINDOW_MS: int = 500  # grace period after releasing fire button
 const GRENADE_WINDOW_MS: int = 6000  # 6s covers 3s fuse + travel + buffer
+var _last_fire_time: int = 0
 var _last_grenade_time: int = 0
 var _prev_grenade1: bool = false
 var _prev_grenade2: bool = false
+var _tracked_ai: Array = []  # alive AI node refs for direct death detection
 
 # ─── Scene Tracking ───
 
@@ -72,6 +74,24 @@ var _modal_visible: bool = false
 var _history_visible: bool = false
 var _last_summary: Dictionary = {}
 var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
+var _modal_scene: PackedScene = null
+var _history_scene: PackedScene = null
+
+# ─── UI Style Constants (used for dynamic stat rows) ───
+
+const COLOR_DEATH = Color(1.0, 0.35, 0.35)
+const COLOR_EXTRACTED = Color(0.4, 1.0, 0.5)
+const COLOR_SECTION = Color(0.55, 0.6, 0.7)
+const COLOR_LABEL = Color(0.75, 0.75, 0.78)
+const COLOR_VALUE = Color(1.0, 1.0, 1.0)
+const COLOR_SEPARATOR = Color(0.25, 0.25, 0.3)
+const COLOR_MUTED = Color(0.5, 0.5, 0.55)
+const FONT_SIZE_SECTION = 13
+const FONT_SIZE_STAT = 14
+const FONT_SIZE_HISTORY_OUTCOME = 15
+const FONT_SIZE_HISTORY_DETAIL = 13
+const FONT_SIZE_HISTORY_STATS = 12
+const FONT_SIZE_HISTORY_TS = 10
 
 # ─── Config ───
 
@@ -101,6 +121,8 @@ const CONDITIONS = {
 func _ready():
     process_mode = Node.PROCESS_MODE_ALWAYS
     Engine.set_meta("RunSummaryMain", self)
+    _modal_scene = load("res://mods/RunSummary/scenes/RunSummaryModal.tscn")
+    _history_scene = load("res://mods/RunSummary/scenes/RunSummaryHistory.tscn")
     _mcm_helpers = _try_load_mcm()
     if _mcm_helpers:
         _register_mcm()
@@ -108,10 +130,17 @@ func _ready():
         _load_local_config()
     _register_hotkey(cfg_reopen_key)
     _hook_other_mods()
+    get_tree().node_added.connect(_on_node_added)
     # Load most recent run from history so hotkey works before first run
     var history = _load_history()
     if history.size() > 0:
         _last_summary = history[0]
+
+func _on_node_added(node: Node):
+    # Detect AI nodes — they have `dead`, `boss`, and `Death` method
+    if _run_state == RunState.IN_RUN and "dead" in node and "boss" in node and node.has_method("Death"):
+        if node not in _tracked_ai:
+            _tracked_ai.append(node)
 
 func _hook_other_mods():
     var cash_mod = Engine.get_meta("CashMain", null)
@@ -211,8 +240,9 @@ func _start_run(scene):
 
     _acc_kills = 0
     _acc_boss_kills = 0
-    _acc_last_xp = _snap_xp_total
+    _last_fire_time = 0
     _last_grenade_time = 0
+    _tracked_ai.clear()
     _prev_grenade1 = gameData.grenade1 if "grenade1" in gameData else false
     _prev_grenade2 = gameData.grenade2 if "grenade2" in gameData else false
     _acc_cash_earned = 0
@@ -240,12 +270,10 @@ func _start_run(scene):
     print("[RunSummary] Run started on %s" % _snap_map)
 
 func _track_run():
-    # ─── Kill detection (frame-by-frame XP monitoring) ───
-    var current_xp = _get_xp_total()
-    if current_xp > _acc_peak_xp:
-        _acc_peak_xp = current_xp
+    # ─── Track fire/grenade timing (used by both detection methods) ───
+    if Input.is_action_pressed("fire") or gameData.isFiring:
+        _last_fire_time = Time.get_ticks_msec()
 
-    # Detect grenade throws (grenade1/grenade2 transition true → false)
     var g1 = gameData.grenade1 if "grenade1" in gameData else false
     var g2 = gameData.grenade2 if "grenade2" in gameData else false
     if (_prev_grenade1 and !g1) or (_prev_grenade2 and !g2):
@@ -253,28 +281,19 @@ func _track_run():
     _prev_grenade1 = g1
     _prev_grenade2 = g2
 
-    # Check for XP increase → attribute kill
-    var xp_delta_frame = current_xp - _acc_last_xp
-    if xp_delta_frame > 0:
-        var is_player_kill = false
-
-        # Gun kill: check raw input first — isFiring has a timing issue where
-        # FireImpulse() runs AFTER Raycast→Death in the same physics frame
-        if Input.is_action_pressed("fire"):
-            is_player_kill = true
-        elif gameData.isFiring:
-            is_player_kill = true
-        # Grenade kill: player recently threw a grenade
-        elif _last_grenade_time > 0 and (Time.get_ticks_msec() - _last_grenade_time) <= GRENADE_WINDOW_MS:
-            is_player_kill = true
-
-        if is_player_kill:
-            if xp_delta_frame >= 100:
-                _acc_boss_kills += 1
+    # ─── Kill detection: poll tracked AI nodes for death ───
+    var still_alive: Array = []
+    for ai in _tracked_ai:
+        if !is_instance_valid(ai):
+            continue
+        if ai.dead:
+            if _is_player_attacking():
+                if "boss" in ai and ai.boss:
+                    _acc_boss_kills += 1
                 _acc_kills += 1
-            else:
-                _acc_kills += xp_delta_frame / 25
-    _acc_last_xp = current_xp
+        else:
+            still_alive.append(ai)
+    _tracked_ai = still_alive
 
     # Track damage taken (accumulate decreases, ignore healing)
     var current_hp = gameData.health
@@ -378,6 +397,18 @@ func _end_run(died: bool):
 
 # ─── Helpers ───
 
+func _is_player_attacking() -> bool:
+    if Input.is_action_pressed("fire"):
+        return true
+    if gameData.isFiring:
+        return true
+    var now = Time.get_ticks_msec()
+    if _last_fire_time > 0 and (now - _last_fire_time) <= FIRE_WINDOW_MS:
+        return true
+    if _last_grenade_time > 0 and (now - _last_grenade_time) <= GRENADE_WINDOW_MS:
+        return true
+    return false
+
 func _get_xp_total() -> int:
     # Prefer XP mod's own tracker (separate from gameData)
     var xp_mod = Engine.get_meta("XPMain", null)
@@ -463,158 +494,90 @@ func _show_summary_modal():
 func _build_modal(summary: Dictionary):
     _cleanup_modal()
 
-    # Full-screen dark overlay
-    _overlay = ColorRect.new()
-    _overlay.name = "RunSummaryOverlay"
-    _overlay.color = Color(0, 0, 0, 0.8)
-    _overlay.anchor_right = 1.0
-    _overlay.anchor_bottom = 1.0
-    _overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+    _overlay = _modal_scene.instantiate()
     _canvas_layer.add_child(_overlay)
 
-    # Centered panel
-    var panel = PanelContainer.new()
-    panel.name = "RunSummaryPanel"
-    var panel_style = StyleBoxFlat.new()
-    panel_style.bg_color = Color(0.08, 0.08, 0.1, 0.95)
-    panel_style.border_color = Color(0.3, 0.3, 0.35, 1.0)
-    panel_style.set_border_width_all(1)
-    panel_style.set_corner_radius_all(4)
-    panel_style.content_margin_left = 24
-    panel_style.content_margin_right = 24
-    panel_style.content_margin_top = 20
-    panel_style.content_margin_bottom = 20
-    panel.add_theme_stylebox_override("panel", panel_style)
-    panel.set_anchors_preset(Control.PRESET_CENTER)
-    panel.custom_minimum_size = Vector2(480, 0)
-    panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
-    panel.grow_vertical = Control.GROW_DIRECTION_BOTH
-    _overlay.add_child(panel)
-
-    var scroll = ScrollContainer.new()
-    scroll.custom_minimum_size = Vector2(480, 520)
-    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    panel.add_child(scroll)
-
-    # Margin inside scroll to prevent scrollbar from overlapping content
-    var scroll_margin = MarginContainer.new()
-    scroll_margin.add_theme_constant_override("margin_right", 14)
-    scroll_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.add_child(scroll_margin)
-
-    var vbox = VBoxContainer.new()
-    vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll_margin.add_child(vbox)
-
-    # Title
+    # Title — dynamic color based on outcome
     var is_death = summary.get("outcome", "") == "DEATH"
-    var title = Label.new()
+    var title = _overlay.find_child("Title")
     title.text = "DEATH SUMMARY" if is_death else "RUN SUMMARY"
-    title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    title.add_theme_font_size_override("font_size", 22)
-    title.add_theme_color_override("font_color", Color(1.0, 0.35, 0.35) if is_death else Color(0.4, 1.0, 0.5))
-    vbox.add_child(title)
+    title.add_theme_color_override("font_color", COLOR_DEATH if is_death else COLOR_EXTRACTED)
 
-    # Subtitle: map + duration
-    var duration_str = _format_duration(summary.get("duration_sec", 0))
-    var subtitle = Label.new()
-    subtitle.text = "%s  •  %s" % [summary.get("map", "Unknown"), duration_str]
-    subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    subtitle.add_theme_font_size_override("font_size", 14)
-    subtitle.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
-    vbox.add_child(subtitle)
+    # Subtitle — map + duration
+    var subtitle = _overlay.find_child("Subtitle")
+    subtitle.text = "%s  •  %s" % [summary.get("map", "Unknown"), _format_duration(summary.get("duration_sec", 0))]
 
-    _add_spacer(vbox, 12)
-    _add_separator(vbox)
-    _add_spacer(vbox, 8)
+    # Dynamic stats
+    var stats = _overlay.find_child("StatsContainer")
 
     # ─── Combat ───
-    _add_section_header(vbox, "COMBAT")
-    _add_stat_row(vbox, "Enemies Killed", str(summary.get("kills", 0)))
+    _add_section_header(stats, "COMBAT")
+    _add_stat_row(stats, "Enemies Killed", str(summary.get("kills", 0)))
     var boss_kills = summary.get("boss_kills", 0)
     if boss_kills > 0:
-        _add_stat_row(vbox, "Bosses Killed", str(boss_kills))
-    _add_stat_row(vbox, "Damage Taken", str(summary.get("damage_taken", 0)))
-    _add_spacer(vbox, 8)
+        _add_stat_row(stats, "Bosses Killed", str(boss_kills))
+    _add_stat_row(stats, "Damage Taken", str(summary.get("damage_taken", 0)))
+    _add_spacer(stats, 8)
 
     # ─── Loot ───
-    _add_section_header(vbox, "LOOT")
-    _add_stat_row(vbox, "Items Picked Up", str(summary.get("items_picked", 0)))
+    _add_section_header(stats, "LOOT")
+    _add_stat_row(stats, "Items Picked Up", str(summary.get("items_picked", 0)))
     var val = summary.get("value_gained", 0)
     var val_str = ("+€" if val >= 0 else "-€") + str(abs(val))
-    _add_stat_row(vbox, "Value Gained", val_str)
-    _add_spacer(vbox, 8)
+    _add_stat_row(stats, "Value Gained", val_str)
+    _add_spacer(stats, 8)
 
-    # ─── Economy (only show if any economy activity) ───
+    # ─── Economy (conditional) ───
     var cash_e = summary.get("cash_earned", 0)
     var cash_s = summary.get("cash_spent", 0)
     if cash_e > 0 or cash_s > 0:
-        _add_section_header(vbox, "ECONOMY")
+        _add_section_header(stats, "ECONOMY")
         if cash_e > 0:
-            _add_stat_row(vbox, "Cash Earned", "+€" + str(cash_e))
+            _add_stat_row(stats, "Cash Earned", "+€" + str(cash_e))
         if cash_s > 0:
-            _add_stat_row(vbox, "Cash Spent", "-€" + str(cash_s))
-        _add_spacer(vbox, 8)
+            _add_stat_row(stats, "Cash Spent", "-€" + str(cash_s))
+        _add_spacer(stats, 8)
 
     # ─── Survival ───
-    _add_section_header(vbox, "SURVIVAL")
+    _add_section_header(stats, "SURVIVAL")
     var energy_drain = summary.get("energy_used", 0)
     var energy_gain = summary.get("energy_restored", 0)
-    _add_stat_row(vbox, "Energy Drain", "-%s%%" % str(energy_drain))
+    _add_stat_row(stats, "Energy Drain", "-%s%%" % str(energy_drain))
     if energy_gain > 0:
-        _add_stat_row(vbox, "Energy Restored", "+%s%%" % str(energy_gain))
+        _add_stat_row(stats, "Energy Restored", "+%s%%" % str(energy_gain))
     var hydro_drain = summary.get("hydration_used", 0)
     var hydro_gain = summary.get("hydration_restored", 0)
-    _add_stat_row(vbox, "Hydration Drain", "-%s%%" % str(hydro_drain))
+    _add_stat_row(stats, "Hydration Drain", "-%s%%" % str(hydro_drain))
     if hydro_gain > 0:
-        _add_stat_row(vbox, "Hydration Restored", "+%s%%" % str(hydro_gain))
+        _add_stat_row(stats, "Hydration Restored", "+%s%%" % str(hydro_gain))
     var mental_lost = summary.get("mental_lost", 0)
     var mental_gain = summary.get("mental_restored", 0)
     if mental_lost > 0:
-        _add_stat_row(vbox, "Mental Lost", "-%s%%" % str(mental_lost))
+        _add_stat_row(stats, "Mental Lost", "-%s%%" % str(mental_lost))
     if mental_gain > 0:
-        _add_stat_row(vbox, "Mental Restored", "+%s%%" % str(mental_gain))
+        _add_stat_row(stats, "Mental Restored", "+%s%%" % str(mental_gain))
     var conds = summary.get("conditions", [])
     if conds.size() > 0:
         var cond_names = []
         for c in conds:
             cond_names.append(CONDITIONS.get(c, c))
-        _add_stat_row(vbox, "Conditions", ", ".join(cond_names))
-    _add_spacer(vbox, 8)
+        _add_stat_row(stats, "Conditions", ", ".join(cond_names))
+    _add_spacer(stats, 8)
 
-    # ─── XP ───
+    # ─── XP (conditional) ───
     var xp = summary.get("xp_gained", 0)
     if xp > 0:
-        _add_section_header(vbox, "PROGRESSION")
-        _add_stat_row(vbox, "XP Gained", "+" + str(xp))
-        _add_spacer(vbox, 8)
-
-    _add_separator(vbox)
-    _add_spacer(vbox, 8)
+        _add_section_header(stats, "PROGRESSION")
+        _add_stat_row(stats, "XP Gained", "+" + str(xp))
+        _add_spacer(stats, 8)
 
     # Timestamp
-    var ts = Label.new()
+    var ts = _overlay.find_child("Timestamp")
     ts.text = summary.get("timestamp", "")
-    ts.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    ts.add_theme_font_size_override("font_size", 11)
-    ts.add_theme_color_override("font_color", Color(0.4, 0.4, 0.45))
-    vbox.add_child(ts)
 
-    _add_spacer(vbox, 12)
-
-    # Buttons row
-    var btn_row = HBoxContainer.new()
-    btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
-    btn_row.add_theme_constant_override("separation", 12)
-    vbox.add_child(btn_row)
-
-    var history_btn = _make_button("Run History", Color(0.25, 0.25, 0.3))
-    history_btn.pressed.connect(_toggle_history)
-    btn_row.add_child(history_btn)
-
-    var close_btn = _make_button("Close  [Esc]", Color(0.3, 0.15, 0.15))
-    close_btn.pressed.connect(_close_modal)
-    btn_row.add_child(close_btn)
+    # Wire buttons
+    _overlay.find_child("HistoryButton").pressed.connect(_toggle_history)
+    _overlay.find_child("CloseButton").pressed.connect(_close_modal)
 
 func _cleanup_modal():
     if _overlay and is_instance_valid(_overlay):
@@ -651,90 +614,34 @@ func _toggle_history():
 func _build_history_view():
     _cleanup_modal()
 
-    _overlay = ColorRect.new()
-    _overlay.name = "RunSummaryOverlay"
-    _overlay.color = Color(0, 0, 0, 0.8)
-    _overlay.anchor_right = 1.0
-    _overlay.anchor_bottom = 1.0
-    _overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+    _overlay = _history_scene.instantiate()
     _canvas_layer.add_child(_overlay)
 
-    var panel = PanelContainer.new()
-    var panel_style = StyleBoxFlat.new()
-    panel_style.bg_color = Color(0.08, 0.08, 0.1, 0.95)
-    panel_style.border_color = Color(0.3, 0.3, 0.35, 1.0)
-    panel_style.set_border_width_all(1)
-    panel_style.set_corner_radius_all(4)
-    panel_style.content_margin_left = 24
-    panel_style.content_margin_right = 24
-    panel_style.content_margin_top = 20
-    panel_style.content_margin_bottom = 20
-    panel.add_theme_stylebox_override("panel", panel_style)
-    panel.set_anchors_preset(Control.PRESET_CENTER)
-    panel.custom_minimum_size = Vector2(520, 0)
-    panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
-    panel.grow_vertical = Control.GROW_DIRECTION_BOTH
-    _overlay.add_child(panel)
-
-    var scroll = ScrollContainer.new()
-    scroll.custom_minimum_size = Vector2(520, 520)
-    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    panel.add_child(scroll)
-
-    var scroll_margin = MarginContainer.new()
-    scroll_margin.add_theme_constant_override("margin_right", 14)
-    scroll_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.add_child(scroll_margin)
-
-    var vbox = VBoxContainer.new()
-    vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll_margin.add_child(vbox)
-
-    var title = Label.new()
-    title.text = "RUN HISTORY"
-    title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    title.add_theme_font_size_override("font_size", 22)
-    title.add_theme_color_override("font_color", Color(0.7, 0.8, 1.0))
-    vbox.add_child(title)
-
-    _add_spacer(vbox, 8)
-    _add_separator(vbox)
-    _add_spacer(vbox, 8)
+    var container = _overlay.find_child("HistoryContainer")
 
     var history = _load_history()
     if history.size() == 0:
         var empty = Label.new()
         empty.text = "No runs recorded yet."
         empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-        empty.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
-        vbox.add_child(empty)
+        empty.add_theme_color_override("font_color", COLOR_MUTED)
+        container.add_child(empty)
     else:
         for i in range(history.size()):
             var run = history[i]
-            _add_history_entry(vbox, run, i)
+            _add_history_entry(container, run, i)
             if i < history.size() - 1:
-                _add_spacer(vbox, 4)
-                _add_separator(vbox)
-                _add_spacer(vbox, 4)
+                _add_spacer(container, 4)
+                _add_separator(container)
+                _add_spacer(container, 4)
 
-    _add_spacer(vbox, 12)
-
-    var btn_row = HBoxContainer.new()
-    btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
-    btn_row.add_theme_constant_override("separation", 12)
-    vbox.add_child(btn_row)
-
-    var back_btn = _make_button("Back", Color(0.25, 0.25, 0.3))
-    back_btn.pressed.connect(_toggle_history)
-    btn_row.add_child(back_btn)
-
-    var close_btn = _make_button("Close  [Esc]", Color(0.3, 0.15, 0.15))
-    close_btn.pressed.connect(_close_modal)
-    btn_row.add_child(close_btn)
+    # Wire buttons
+    _overlay.find_child("BackButton").pressed.connect(_toggle_history)
+    _overlay.find_child("CloseButton").pressed.connect(_close_modal)
 
 func _add_history_entry(parent: VBoxContainer, run: Dictionary, index: int):
     var is_death = run.get("outcome", "") == "DEATH"
-    var color = Color(1.0, 0.4, 0.4) if is_death else Color(0.4, 1.0, 0.5)
+    var color = COLOR_DEATH if is_death else COLOR_EXTRACTED
 
     var header = HBoxContainer.new()
     header.add_theme_constant_override("separation", 8)
@@ -743,20 +650,20 @@ func _add_history_entry(parent: VBoxContainer, run: Dictionary, index: int):
     var outcome_label = Label.new()
     outcome_label.text = run.get("outcome", "?")
     outcome_label.add_theme_color_override("font_color", color)
-    outcome_label.add_theme_font_size_override("font_size", 15)
+    outcome_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_OUTCOME)
     outcome_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     header.add_child(outcome_label)
 
     var map_label = Label.new()
     map_label.text = run.get("map", "?")
     map_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
-    map_label.add_theme_font_size_override("font_size", 13)
+    map_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_DETAIL)
     header.add_child(map_label)
 
     var time_label = Label.new()
     time_label.text = _format_duration(run.get("duration_sec", 0))
-    time_label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55))
-    time_label.add_theme_font_size_override("font_size", 13)
+    time_label.add_theme_color_override("font_color", COLOR_MUTED)
+    time_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_DETAIL)
     header.add_child(time_label)
 
     # Compact stats line
@@ -780,13 +687,13 @@ func _add_history_entry(parent: VBoxContainer, run: Dictionary, index: int):
     if stats_parts.size() > 0:
         var stats_label = Label.new()
         stats_label.text = "  ".join(stats_parts)
-        stats_label.add_theme_font_size_override("font_size", 12)
+        stats_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_STATS)
         stats_label.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
         parent.add_child(stats_label)
 
     var ts_label = Label.new()
     ts_label.text = run.get("timestamp", "")
-    ts_label.add_theme_font_size_override("font_size", 10)
+    ts_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_TS)
     ts_label.add_theme_color_override("font_color", Color(0.35, 0.35, 0.4))
     parent.add_child(ts_label)
 
@@ -795,8 +702,8 @@ func _add_history_entry(parent: VBoxContainer, run: Dictionary, index: int):
 func _add_section_header(parent: VBoxContainer, text: String):
     var label = Label.new()
     label.text = text
-    label.add_theme_font_size_override("font_size", 13)
-    label.add_theme_color_override("font_color", Color(0.55, 0.6, 0.7))
+    label.add_theme_font_size_override("font_size", FONT_SIZE_SECTION)
+    label.add_theme_color_override("font_color", COLOR_SECTION)
     parent.add_child(label)
 
 func _add_stat_row(parent: VBoxContainer, label_text: String, value_text: String):
@@ -807,15 +714,15 @@ func _add_stat_row(parent: VBoxContainer, label_text: String, value_text: String
     var lbl = Label.new()
     lbl.text = label_text
     lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    lbl.add_theme_font_size_override("font_size", 14)
-    lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.78))
+    lbl.add_theme_font_size_override("font_size", FONT_SIZE_STAT)
+    lbl.add_theme_color_override("font_color", COLOR_LABEL)
     row.add_child(lbl)
 
     var val = Label.new()
     val.text = value_text
     val.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-    val.add_theme_font_size_override("font_size", 14)
-    val.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0))
+    val.add_theme_font_size_override("font_size", FONT_SIZE_STAT)
+    val.add_theme_color_override("font_color", COLOR_VALUE)
     row.add_child(val)
 
 func _add_spacer(parent: VBoxContainer, height: int):
@@ -826,29 +733,8 @@ func _add_spacer(parent: VBoxContainer, height: int):
 
 func _add_separator(parent: VBoxContainer):
     var sep = HSeparator.new()
-    sep.add_theme_color_override("separator", Color(0.25, 0.25, 0.3))
+    sep.add_theme_color_override("separator", COLOR_SEPARATOR)
     parent.add_child(sep)
-
-func _make_button(text: String, bg_color: Color) -> Button:
-    var btn = Button.new()
-    btn.text = text
-    btn.custom_minimum_size = Vector2(130, 32)
-    btn.focus_mode = Control.FOCUS_NONE
-    var style = StyleBoxFlat.new()
-    style.bg_color = bg_color
-    style.set_corner_radius_all(3)
-    style.content_margin_left = 12
-    style.content_margin_right = 12
-    style.content_margin_top = 6
-    style.content_margin_bottom = 6
-    btn.add_theme_stylebox_override("normal", style)
-    var hover_style = style.duplicate()
-    hover_style.bg_color = bg_color.lightened(0.15)
-    btn.add_theme_stylebox_override("hover", hover_style)
-    var pressed_style = style.duplicate()
-    pressed_style.bg_color = bg_color.darkened(0.1)
-    btn.add_theme_stylebox_override("pressed", pressed_style)
-    return btn
 
 func _format_duration(seconds: int) -> String:
     var mins = seconds / 60
