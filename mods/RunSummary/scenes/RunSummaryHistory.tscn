@@ -1,0 +1,171 @@
+[gd_scene load_steps=8 format=3]
+
+[sub_resource type="StyleBoxFlat" id="panel_style"]
+bg_color = Color(0.08, 0.08, 0.1, 0.95)
+border_color = Color(0.3, 0.3, 0.35, 1.0)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+content_margin_left = 24.0
+content_margin_top = 20.0
+content_margin_right = 24.0
+content_margin_bottom = 20.0
+
+[sub_resource type="StyleBoxFlat" id="back_btn_normal"]
+bg_color = Color(0.25, 0.25, 0.3, 1.0)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+content_margin_left = 12.0
+content_margin_top = 6.0
+content_margin_right = 12.0
+content_margin_bottom = 6.0
+
+[sub_resource type="StyleBoxFlat" id="back_btn_hover"]
+bg_color = Color(0.3625, 0.3625, 0.405, 1.0)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+content_margin_left = 12.0
+content_margin_top = 6.0
+content_margin_right = 12.0
+content_margin_bottom = 6.0
+
+[sub_resource type="StyleBoxFlat" id="back_btn_pressed"]
+bg_color = Color(0.225, 0.225, 0.27, 1.0)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+content_margin_left = 12.0
+content_margin_top = 6.0
+content_margin_right = 12.0
+content_margin_bottom = 6.0
+
+[sub_resource type="StyleBoxFlat" id="close_btn_normal"]
+bg_color = Color(0.3, 0.15, 0.15, 1.0)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+content_margin_left = 12.0
+content_margin_top = 6.0
+content_margin_right = 12.0
+content_margin_bottom = 6.0
+
+[sub_resource type="StyleBoxFlat" id="close_btn_hover"]
+bg_color = Color(0.405, 0.2775, 0.2775, 1.0)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+content_margin_left = 12.0
+content_margin_top = 6.0
+content_margin_right = 12.0
+content_margin_bottom = 6.0
+
+[sub_resource type="StyleBoxFlat" id="close_btn_pressed"]
+bg_color = Color(0.27, 0.135, 0.135, 1.0)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+content_margin_left = 12.0
+content_margin_top = 6.0
+content_margin_right = 12.0
+content_margin_bottom = 6.0
+
+[node name="Overlay" type="ColorRect"]
+color = Color(0, 0, 0, 0.8)
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 0
+
+[node name="Panel" type="PanelContainer" parent="."]
+custom_minimum_size = Vector2(520, 0)
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("panel_style")
+
+[node name="Scroll" type="ScrollContainer" parent="Panel"]
+custom_minimum_size = Vector2(520, 520)
+layout_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="ScrollMargin" type="MarginContainer" parent="Panel/Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/margin_right = 14
+
+[node name="Content" type="VBoxContainer" parent="Panel/Scroll/ScrollMargin"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Title" type="Label" parent="Panel/Scroll/ScrollMargin/Content"]
+layout_mode = 2
+text = "RUN HISTORY"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.7, 0.8, 1.0, 1.0)
+
+[node name="TopSpacer" type="Control" parent="Panel/Scroll/ScrollMargin/Content"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 8)
+mouse_filter = 2
+
+[node name="TopSeparator" type="HSeparator" parent="Panel/Scroll/ScrollMargin/Content"]
+layout_mode = 2
+theme_override_colors/separator = Color(0.25, 0.25, 0.3, 1.0)
+
+[node name="AfterSepSpacer" type="Control" parent="Panel/Scroll/ScrollMargin/Content"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 8)
+mouse_filter = 2
+
+[node name="HistoryContainer" type="VBoxContainer" parent="Panel/Scroll/ScrollMargin/Content"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BottomSpacer" type="Control" parent="Panel/Scroll/ScrollMargin/Content"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 12)
+mouse_filter = 2
+
+[node name="ButtonRow" type="HBoxContainer" parent="Panel/Scroll/ScrollMargin/Content"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 12
+
+[node name="BackButton" type="Button" parent="Panel/Scroll/ScrollMargin/Content/ButtonRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(130, 32)
+layout_mode = 2
+focus_mode = 0
+text = "Back"
+theme_override_styles/normal = SubResource("back_btn_normal")
+theme_override_styles/hover = SubResource("back_btn_hover")
+theme_override_styles/pressed = SubResource("back_btn_pressed")
+
+[node name="CloseButton" type="Button" parent="Panel/Scroll/ScrollMargin/Content/ButtonRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(130, 32)
+layout_mode = 2
+focus_mode = 0
+text = "Close  [Esc]"
+theme_override_styles/normal = SubResource("close_btn_normal")
+theme_override_styles/hover = SubResource("close_btn_hover")
+theme_override_styles/pressed = SubResource("close_btn_pressed")
