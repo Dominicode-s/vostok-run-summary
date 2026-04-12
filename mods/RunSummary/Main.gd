@@ -46,15 +46,17 @@ var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
 var _acc_peak_xp: int = 0
-var _acc_last_xp: int = 0
 var _acc_boss_kills: int = 0
 
 # ─── Kill Attribution ───
 
+const FIRE_WINDOW_MS: int = 500  # grace period after releasing fire button
 const GRENADE_WINDOW_MS: int = 6000  # 6s covers 3s fuse + travel + buffer
+var _last_fire_time: int = 0
 var _last_grenade_time: int = 0
 var _prev_grenade1: bool = false
 var _prev_grenade2: bool = false
+var _tracked_ai: Array = []  # alive AI node refs for direct death detection
 
 # ─── Scene Tracking ───
 
@@ -128,10 +130,17 @@ func _ready():
         _load_local_config()
     _register_hotkey(cfg_reopen_key)
     _hook_other_mods()
+    get_tree().node_added.connect(_on_node_added)
     # Load most recent run from history so hotkey works before first run
     var history = _load_history()
     if history.size() > 0:
         _last_summary = history[0]
+
+func _on_node_added(node: Node):
+    # Detect AI nodes — they have `dead`, `boss`, and `Death` method
+    if _run_state == RunState.IN_RUN and "dead" in node and "boss" in node and node.has_method("Death"):
+        if node not in _tracked_ai:
+            _tracked_ai.append(node)
 
 func _hook_other_mods():
     var cash_mod = Engine.get_meta("CashMain", null)
@@ -231,8 +240,9 @@ func _start_run(scene):
 
     _acc_kills = 0
     _acc_boss_kills = 0
-    _acc_last_xp = _snap_xp_total
+    _last_fire_time = 0
     _last_grenade_time = 0
+    _tracked_ai.clear()
     _prev_grenade1 = gameData.grenade1 if "grenade1" in gameData else false
     _prev_grenade2 = gameData.grenade2 if "grenade2" in gameData else false
     _acc_cash_earned = 0
@@ -260,12 +270,10 @@ func _start_run(scene):
     print("[RunSummary] Run started on %s" % _snap_map)
 
 func _track_run():
-    # ─── Kill detection (frame-by-frame XP monitoring) ───
-    var current_xp = _get_xp_total()
-    if current_xp > _acc_peak_xp:
-        _acc_peak_xp = current_xp
+    # ─── Track fire/grenade timing (used by both detection methods) ───
+    if Input.is_action_pressed("fire") or gameData.isFiring:
+        _last_fire_time = Time.get_ticks_msec()
 
-    # Detect grenade throws (grenade1/grenade2 transition true → false)
     var g1 = gameData.grenade1 if "grenade1" in gameData else false
     var g2 = gameData.grenade2 if "grenade2" in gameData else false
     if (_prev_grenade1 and !g1) or (_prev_grenade2 and !g2):
@@ -273,28 +281,19 @@ func _track_run():
     _prev_grenade1 = g1
     _prev_grenade2 = g2
 
-    # Check for XP increase → attribute kill
-    var xp_delta_frame = current_xp - _acc_last_xp
-    if xp_delta_frame > 0:
-        var is_player_kill = false
-
-        # Gun kill: check raw input first — isFiring has a timing issue where
-        # FireImpulse() runs AFTER Raycast→Death in the same physics frame
-        if Input.is_action_pressed("fire"):
-            is_player_kill = true
-        elif gameData.isFiring:
-            is_player_kill = true
-        # Grenade kill: player recently threw a grenade
-        elif _last_grenade_time > 0 and (Time.get_ticks_msec() - _last_grenade_time) <= GRENADE_WINDOW_MS:
-            is_player_kill = true
-
-        if is_player_kill:
-            if xp_delta_frame >= 100:
-                _acc_boss_kills += 1
+    # ─── Kill detection: poll tracked AI nodes for death ───
+    var still_alive: Array = []
+    for ai in _tracked_ai:
+        if !is_instance_valid(ai):
+            continue
+        if ai.dead:
+            if _is_player_attacking():
+                if "boss" in ai and ai.boss:
+                    _acc_boss_kills += 1
                 _acc_kills += 1
-            else:
-                _acc_kills += xp_delta_frame / 25
-    _acc_last_xp = current_xp
+        else:
+            still_alive.append(ai)
+    _tracked_ai = still_alive
 
     # Track damage taken (accumulate decreases, ignore healing)
     var current_hp = gameData.health
@@ -397,6 +396,18 @@ func _end_run(died: bool):
         get_tree().create_timer(1.5).timeout.connect(_show_summary_modal)
 
 # ─── Helpers ───
+
+func _is_player_attacking() -> bool:
+    if Input.is_action_pressed("fire"):
+        return true
+    if gameData.isFiring:
+        return true
+    var now = Time.get_ticks_msec()
+    if _last_fire_time > 0 and (now - _last_fire_time) <= FIRE_WINDOW_MS:
+        return true
+    if _last_grenade_time > 0 and (now - _last_grenade_time) <= GRENADE_WINDOW_MS:
+        return true
+    return false
 
 func _get_xp_total() -> int:
     # Prefer XP mod's own tracker (separate from gameData)
