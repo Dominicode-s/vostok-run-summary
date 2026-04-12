@@ -45,7 +45,6 @@ var _acc_mental_restored: float = 0.0
 var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
-var _acc_peak_xp: int = 0
 var _acc_boss_kills: int = 0
 
 # ─── Kill Attribution ───
@@ -262,7 +261,6 @@ func _start_run(scene):
     _acc_items_picked = 0
     _acc_last_inv_count = _snap_inv_count
     _inv_snapshot_ready = _snap_inv_count > 0
-    _acc_peak_xp = _snap_xp_total
 
     _was_dead = false
     _was_shelter = false
@@ -361,7 +359,7 @@ func _end_run(died: bool):
     _run_state = RunState.RUN_ENDED
 
     var elapsed_ms = Time.get_ticks_msec() - _snap_time_real
-    var xp_delta = _acc_peak_xp - _snap_xp_total
+    var xp_delta = _get_xp_total() - _snap_xp_total
 
     var summary = {
         "outcome": "DEATH" if died else "EXTRACTED",
@@ -410,12 +408,9 @@ func _is_player_attacking() -> bool:
     return false
 
 func _get_xp_total() -> int:
-    # Prefer XP mod's own tracker (separate from gameData)
-    var xp_mod = Engine.get_meta("XPMain", null)
-    if xp_mod and "xpTotal" in xp_mod:
-        return xp_mod.xpTotal
-    if "xpTotal" in gameData:
-        return gameData.xpTotal
+    var cfg = ConfigFile.new()
+    if cfg.load("user://XPData.cfg") == OK:
+        return cfg.get_value("xp", "xpTotal", 0)
     return 0
 
 func _get_inv_value() -> float:
