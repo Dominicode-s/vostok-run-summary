@@ -2,6 +2,10 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.1.4
+- Fixed XP gained always showing 0 or incorrect values in run summary
+- XP tracking now reads XPData.cfg directly at run start/end instead of polling in-memory values
+
 ## v1.1.3
 - Fixed kill tracking not working without XP Skills mod — game removed built-in XP fields
 - Replaced XP-delta kill detection with direct AI death polling via node_added signal
