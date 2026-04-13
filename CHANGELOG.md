@@ -2,6 +2,16 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.2.1
+- **Fixed XP gained showing 0 with XP & Skills System v2.1.0+** — XP Skills now writes per-profile data at `user://XPData_<profile>.cfg`, but Run Summary was still reading the legacy `user://XPData.cfg`. Both mods now use the same profile-aware path.
+- **Fixed run history being shared across Patty's Profiles** — history is now keyed by active profile at `user://RunSummaryHistory_<profile>.cfg`. First-time switch migrates the legacy `RunSummaryHistory.cfg` into the active profile and deletes the legacy file so other profiles start fresh.
+- When switching profile in the Patty UI mid-session, the F6 "show last run" summary now reloads from the new profile's history on the next scene change.
+
+## v1.2.0
+- **UI overhaul** — huge thanks to **MJRamon** for the new visual design. Both modal and history views now use structured `.tscn` scenes with a themed header, icon, styled category headers, row bullets, and pill-style compact stats on history cards. Four new template scenes under `scenes/templates/` (`RunSummaryStatsHeader`, `RunSummaryStatsRow`, `RunSummaryHistoryEntry`, `RunSummaryHistoryStatPart`) make future visual tweaks editor-driven rather than code-driven.
+- Rewrote the modal and history builders to instance the template scenes per real stat row / run entry instead of constructing bespoke Labels in code. Section skipping and conditional rows still work the same; empty sections are omitted entirely.
+- Removed now-dead style constants and helper functions (`_add_section_header`, `_add_stat_row`, `_add_spacer`, `_add_separator`) — all styling lives in the `.tscn` templates.
+
 ## v1.1.4
 - Fixed XP gained always showing 0 or incorrect values in run summary
 - XP tracking now reads XPData.cfg directly at run start/end instead of polling in-memory values
