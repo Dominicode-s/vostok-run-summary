@@ -84,12 +84,8 @@ var _stats_row_scene: PackedScene = null
 var _history_entry_scene: PackedScene = null
 var _history_stat_part_scene: PackedScene = null
 
-# ─── UI Style Constants ───
-# Title color tints for outcome state; all other styling lives in the .tscn
-# templates via theme/stylebox overrides.
-
-const COLOR_DEATH = Color(1.0, 0.35, 0.35)
-const COLOR_EXTRACTED = Color(0.4, 1.0, 0.5)
+# All UI styling lives in the .tscn templates via theme/stylebox overrides —
+# Main.gd only populates text and toggles visibility.
 
 # ─── Config ───
 
@@ -528,11 +524,12 @@ func _build_modal(summary: Dictionary):
     _overlay = _modal_scene.instantiate()
     _canvas_layer.add_child(_overlay)
 
-    # Header slots
+    # Header slots. Title is Title Case with no color override so the theme
+    # color from MJRamon's template shows through — outcome is still
+    # communicated via the death/extracted word at the front.
     var is_death = summary.get("outcome", "") == "DEATH"
     var title: Label = _overlay.get_node("%Title")
-    title.text = "DEATH SUMMARY" if is_death else "RUN SUMMARY"
-    title.add_theme_color_override("font_color", COLOR_DEATH if is_death else COLOR_EXTRACTED)
+    title.text = "Death Summary" if is_death else "Run Summary"
     _overlay.get_node("%SubtitleMap").text = summary.get("map", "Unknown")
     _overlay.get_node("%SubtitleDuration").text = _format_duration(summary.get("duration_sec", 0))
     _overlay.get_node("%Timestamp").text = summary.get("timestamp", "")
@@ -551,12 +548,12 @@ func _build_modal(summary: Dictionary):
     if boss_kills > 0:
         combat.append(["Bosses Killed", str(boss_kills)])
     combat.append(["Damage Taken", str(summary.get("damage_taken", 0))])
-    _add_stats_section(stats, "COMBAT", combat)
+    _add_stats_section(stats, "Combat", combat)
 
     # Loot
     var val = summary.get("value_gained", 0)
     var val_str = ("+€" if val >= 0 else "-€") + str(abs(val))
-    _add_stats_section(stats, "LOOT", [
+    _add_stats_section(stats, "Loot", [
         ["Items Picked Up", str(summary.get("items_picked", 0))],
         ["Value Gained", val_str],
     ])
@@ -569,7 +566,7 @@ func _build_modal(summary: Dictionary):
         economy.append(["Cash Earned", "+€" + str(cash_e)])
     if cash_s > 0:
         economy.append(["Cash Spent", "-€" + str(cash_s)])
-    _add_stats_section(stats, "ECONOMY", economy)
+    _add_stats_section(stats, "Economy", economy)
 
     # Survival
     var survival: Array = []
@@ -595,12 +592,12 @@ func _build_modal(summary: Dictionary):
         for c in conds:
             cond_names.append(CONDITIONS.get(c, c))
         survival.append(["Conditions", ", ".join(cond_names)])
-    _add_stats_section(stats, "SURVIVAL", survival)
+    _add_stats_section(stats, "Survival", survival)
 
     # Progression (conditional)
     var xp = summary.get("xp_gained", 0)
     if xp > 0:
-        _add_stats_section(stats, "PROGRESSION", [["XP Gained", "+" + str(xp)]])
+        _add_stats_section(stats, "Progression", [["XP Gained", "+" + str(xp)]])
 
     # Wire buttons
     _overlay.get_node("%HistoryButton").pressed.connect(_toggle_history)

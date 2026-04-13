@@ -2,6 +2,9 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.2.2
+- Matched the modal text to MJRamon's v1.2.0 design intent — the main title ("Run Summary" / "Death Summary") and the category headers ("Combat", "Loot", "Economy", "Survival", "Progression") are now Title Case instead of ALL CAPS, and the title no longer force-overrides the theme color. The template's muted styling now shows through as the designer intended.
+
 ## v1.2.1
 - **Fixed XP gained showing 0 with XP & Skills System v2.1.0+** — XP Skills now writes per-profile data at `user://XPData_<profile>.cfg`, but Run Summary was still reading the legacy `user://XPData.cfg`. Both mods now use the same profile-aware path.
 - **Fixed run history being shared across Patty's Profiles** — history is now keyed by active profile at `user://RunSummaryHistory_<profile>.cfg`. First-time switch migrates the legacy `RunSummaryHistory.cfg` into the active profile and deletes the legacy file so other profiles start fresh.
