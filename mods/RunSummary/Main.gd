@@ -64,6 +64,10 @@ var _last_scene: String = ""
 var _was_dead: bool = false
 var _was_shelter: bool = true
 var _scene_ready: bool = false
+# Records the history path we last loaded. Used to detect Patty profile
+# switches — when _get_history_path() returns a different path on a menu→game
+# transition, we reload _last_summary. Stays constant without Patty.
+var _last_history_path: String = ""
 
 # ─── UI ───
 
@@ -75,22 +79,17 @@ var _last_summary: Dictionary = {}
 var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
 var _modal_scene: PackedScene = null
 var _history_scene: PackedScene = null
+var _stats_header_scene: PackedScene = null
+var _stats_row_scene: PackedScene = null
+var _history_entry_scene: PackedScene = null
+var _history_stat_part_scene: PackedScene = null
 
-# ─── UI Style Constants (used for dynamic stat rows) ───
+# ─── UI Style Constants ───
+# Title color tints for outcome state; all other styling lives in the .tscn
+# templates via theme/stylebox overrides.
 
 const COLOR_DEATH = Color(1.0, 0.35, 0.35)
 const COLOR_EXTRACTED = Color(0.4, 1.0, 0.5)
-const COLOR_SECTION = Color(0.55, 0.6, 0.7)
-const COLOR_LABEL = Color(0.75, 0.75, 0.78)
-const COLOR_VALUE = Color(1.0, 1.0, 1.0)
-const COLOR_SEPARATOR = Color(0.25, 0.25, 0.3)
-const COLOR_MUTED = Color(0.5, 0.5, 0.55)
-const FONT_SIZE_SECTION = 13
-const FONT_SIZE_STAT = 14
-const FONT_SIZE_HISTORY_OUTCOME = 15
-const FONT_SIZE_HISTORY_DETAIL = 13
-const FONT_SIZE_HISTORY_STATS = 12
-const FONT_SIZE_HISTORY_TS = 10
 
 # ─── Config ───
 
@@ -103,7 +102,8 @@ var _mcm_helpers = null
 const MCM_FILE_PATH = "user://MCM/RunSummary"
 const MCM_MOD_ID = "RunSummary"
 const LOCAL_CFG_PATH = "user://RunSummaryConfig.cfg"
-const HISTORY_PATH = "user://RunSummaryHistory.cfg"
+const HISTORY_PATH_LEGACY = "user://RunSummaryHistory.cfg"
+const XP_PATH_LEGACY = "user://XPData.cfg"
 const REOPEN_ACTION = "run_summary_reopen"
 
 # ─── Condition names for display ───
@@ -122,6 +122,10 @@ func _ready():
     Engine.set_meta("RunSummaryMain", self)
     _modal_scene = load("res://mods/RunSummary/scenes/RunSummaryModal.tscn")
     _history_scene = load("res://mods/RunSummary/scenes/RunSummaryHistory.tscn")
+    _stats_header_scene = load("res://mods/RunSummary/scenes/templates/RunSummaryStatsHeader.tscn")
+    _stats_row_scene = load("res://mods/RunSummary/scenes/templates/RunSummaryStatsRow.tscn")
+    _history_entry_scene = load("res://mods/RunSummary/scenes/templates/RunSummaryHistoryEntry.tscn")
+    _history_stat_part_scene = load("res://mods/RunSummary/scenes/templates/RunSummaryHistoryStatPart.tscn")
     _mcm_helpers = _try_load_mcm()
     if _mcm_helpers:
         _register_mcm()
@@ -131,9 +135,7 @@ func _ready():
     _hook_other_mods()
     get_tree().node_added.connect(_on_node_added)
     # Load most recent run from history so hotkey works before first run
-    var history = _load_history()
-    if history.size() > 0:
-        _last_summary = history[0]
+    _reload_last_summary_from_history()
 
 func _on_node_added(node: Node):
     # Detect AI nodes — they have `dead`, `boss`, and `Death` method
@@ -198,6 +200,10 @@ func _update_interface():
         _last_scene = scene.name
         _interface = null
         _scene_ready = false
+        # On every scene change, check whether the Patty profile changed
+        # while we were in a previous scene / menu. Zero cost without Patty.
+        if _get_history_path() != _last_history_path:
+            _reload_last_summary_from_history()
 
     if _interface == null:
         var core_ui = scene.get_node_or_null("Core/UI")
@@ -207,6 +213,11 @@ func _update_interface():
                     _interface = child
                     _scene_ready = true
                     break
+
+func _reload_last_summary_from_history():
+    _last_history_path = _get_history_path()
+    var history = _load_history()
+    _last_summary = history[0] if history.size() > 0 else {}
 
 # ─── Run Lifecycle ───
 
@@ -409,9 +420,34 @@ func _is_player_attacking() -> bool:
 
 func _get_xp_total() -> int:
     var cfg = ConfigFile.new()
-    if cfg.load("user://XPData.cfg") == OK:
+    if cfg.load(_get_xp_data_path()) == OK:
         return cfg.get_value("xp", "xpTotal", 0)
     return 0
+
+# ─── Patty's Profiles compat ─────────────────────────────────
+# .cfg files aren't swapped by Patty (only .tres are tracked), so we key our
+# own cfg files by the active profile to keep per-profile state isolated.
+# Returns "" if Patty isn't installed, in which case we use the legacy paths.
+
+func _get_active_profile() -> String:
+    if !FileAccess.file_exists("user://profiles/active_profile.cfg"):
+        return ""
+    var cfg = ConfigFile.new()
+    if cfg.load("user://profiles/active_profile.cfg") != OK:
+        return ""
+    return str(cfg.get_value("profiles", "active", ""))
+
+func _get_xp_data_path() -> String:
+    var profile = _get_active_profile()
+    if profile.is_empty():
+        return XP_PATH_LEGACY
+    return "user://XPData_" + profile + ".cfg"
+
+func _get_history_path() -> String:
+    var profile = _get_active_profile()
+    if profile.is_empty():
+        return HISTORY_PATH_LEGACY
+    return "user://RunSummaryHistory_" + profile + ".cfg"
 
 func _get_inv_value() -> float:
     if _interface and "currentInventoryValue" in _interface:
@@ -492,87 +528,96 @@ func _build_modal(summary: Dictionary):
     _overlay = _modal_scene.instantiate()
     _canvas_layer.add_child(_overlay)
 
-    # Title — dynamic color based on outcome
+    # Header slots
     var is_death = summary.get("outcome", "") == "DEATH"
-    var title = _overlay.find_child("Title")
+    var title: Label = _overlay.get_node("%Title")
     title.text = "DEATH SUMMARY" if is_death else "RUN SUMMARY"
     title.add_theme_color_override("font_color", COLOR_DEATH if is_death else COLOR_EXTRACTED)
+    _overlay.get_node("%SubtitleMap").text = summary.get("map", "Unknown")
+    _overlay.get_node("%SubtitleDuration").text = _format_duration(summary.get("duration_sec", 0))
+    _overlay.get_node("%Timestamp").text = summary.get("timestamp", "")
 
-    # Subtitle — map + duration
-    var subtitle = _overlay.find_child("Subtitle")
-    subtitle.text = "%s  •  %s" % [summary.get("map", "Unknown"), _format_duration(summary.get("duration_sec", 0))]
+    # Stats — drop the scene's placeholder rows, then instance templates per
+    # real section. Keeping a template-per-row instead of building bespoke
+    # Labels means the styled bullet/guideline/value layout from the .tscn
+    # applies automatically.
+    var stats: Node = _overlay.get_node("%StatsContainer")
+    for child in stats.get_children():
+        child.queue_free()
 
-    # Dynamic stats
-    var stats = _overlay.find_child("StatsContainer")
-
-    # ─── Combat ───
-    _add_section_header(stats, "COMBAT")
-    _add_stat_row(stats, "Enemies Killed", str(summary.get("kills", 0)))
+    # Combat
+    var combat: Array = [["Enemies Killed", str(summary.get("kills", 0))]]
     var boss_kills = summary.get("boss_kills", 0)
     if boss_kills > 0:
-        _add_stat_row(stats, "Bosses Killed", str(boss_kills))
-    _add_stat_row(stats, "Damage Taken", str(summary.get("damage_taken", 0)))
-    _add_spacer(stats, 8)
+        combat.append(["Bosses Killed", str(boss_kills)])
+    combat.append(["Damage Taken", str(summary.get("damage_taken", 0))])
+    _add_stats_section(stats, "COMBAT", combat)
 
-    # ─── Loot ───
-    _add_section_header(stats, "LOOT")
-    _add_stat_row(stats, "Items Picked Up", str(summary.get("items_picked", 0)))
+    # Loot
     var val = summary.get("value_gained", 0)
     var val_str = ("+€" if val >= 0 else "-€") + str(abs(val))
-    _add_stat_row(stats, "Value Gained", val_str)
-    _add_spacer(stats, 8)
+    _add_stats_section(stats, "LOOT", [
+        ["Items Picked Up", str(summary.get("items_picked", 0))],
+        ["Value Gained", val_str],
+    ])
 
-    # ─── Economy (conditional) ───
+    # Economy (conditional)
     var cash_e = summary.get("cash_earned", 0)
     var cash_s = summary.get("cash_spent", 0)
-    if cash_e > 0 or cash_s > 0:
-        _add_section_header(stats, "ECONOMY")
-        if cash_e > 0:
-            _add_stat_row(stats, "Cash Earned", "+€" + str(cash_e))
-        if cash_s > 0:
-            _add_stat_row(stats, "Cash Spent", "-€" + str(cash_s))
-        _add_spacer(stats, 8)
+    var economy: Array = []
+    if cash_e > 0:
+        economy.append(["Cash Earned", "+€" + str(cash_e)])
+    if cash_s > 0:
+        economy.append(["Cash Spent", "-€" + str(cash_s)])
+    _add_stats_section(stats, "ECONOMY", economy)
 
-    # ─── Survival ───
-    _add_section_header(stats, "SURVIVAL")
+    # Survival
+    var survival: Array = []
     var energy_drain = summary.get("energy_used", 0)
     var energy_gain = summary.get("energy_restored", 0)
-    _add_stat_row(stats, "Energy Drain", "-%s%%" % str(energy_drain))
+    survival.append(["Energy Drain", "-%s%%" % str(energy_drain)])
     if energy_gain > 0:
-        _add_stat_row(stats, "Energy Restored", "+%s%%" % str(energy_gain))
+        survival.append(["Energy Restored", "+%s%%" % str(energy_gain)])
     var hydro_drain = summary.get("hydration_used", 0)
     var hydro_gain = summary.get("hydration_restored", 0)
-    _add_stat_row(stats, "Hydration Drain", "-%s%%" % str(hydro_drain))
+    survival.append(["Hydration Drain", "-%s%%" % str(hydro_drain)])
     if hydro_gain > 0:
-        _add_stat_row(stats, "Hydration Restored", "+%s%%" % str(hydro_gain))
+        survival.append(["Hydration Restored", "+%s%%" % str(hydro_gain)])
     var mental_lost = summary.get("mental_lost", 0)
     var mental_gain = summary.get("mental_restored", 0)
     if mental_lost > 0:
-        _add_stat_row(stats, "Mental Lost", "-%s%%" % str(mental_lost))
+        survival.append(["Mental Lost", "-%s%%" % str(mental_lost)])
     if mental_gain > 0:
-        _add_stat_row(stats, "Mental Restored", "+%s%%" % str(mental_gain))
+        survival.append(["Mental Restored", "+%s%%" % str(mental_gain)])
     var conds = summary.get("conditions", [])
     if conds.size() > 0:
-        var cond_names = []
+        var cond_names: Array = []
         for c in conds:
             cond_names.append(CONDITIONS.get(c, c))
-        _add_stat_row(stats, "Conditions", ", ".join(cond_names))
-    _add_spacer(stats, 8)
+        survival.append(["Conditions", ", ".join(cond_names)])
+    _add_stats_section(stats, "SURVIVAL", survival)
 
-    # ─── XP (conditional) ───
+    # Progression (conditional)
     var xp = summary.get("xp_gained", 0)
     if xp > 0:
-        _add_section_header(stats, "PROGRESSION")
-        _add_stat_row(stats, "XP Gained", "+" + str(xp))
-        _add_spacer(stats, 8)
-
-    # Timestamp
-    var ts = _overlay.find_child("Timestamp")
-    ts.text = summary.get("timestamp", "")
+        _add_stats_section(stats, "PROGRESSION", [["XP Gained", "+" + str(xp)]])
 
     # Wire buttons
-    _overlay.find_child("HistoryButton").pressed.connect(_toggle_history)
-    _overlay.find_child("CloseButton").pressed.connect(_close_modal)
+    _overlay.get_node("%HistoryButton").pressed.connect(_toggle_history)
+    _overlay.get_node("%CloseButton").pressed.connect(_close_modal)
+
+func _add_stats_section(parent: Node, title: String, rows: Array):
+    # Skip empty sections entirely so the modal stays tight.
+    if rows.is_empty():
+        return
+    var header = _stats_header_scene.instantiate()
+    parent.add_child(header)
+    header.get_node("%Title").text = title
+    for row in rows:
+        var row_inst = _stats_row_scene.instantiate()
+        parent.add_child(row_inst)
+        row_inst.get_node("%Title").text = row[0]
+        row_inst.get_node("%Value").text = row[1]
 
 func _cleanup_modal():
     if _overlay and is_instance_valid(_overlay):
@@ -612,124 +657,62 @@ func _build_history_view():
     _overlay = _history_scene.instantiate()
     _canvas_layer.add_child(_overlay)
 
-    var container = _overlay.find_child("HistoryContainer")
+    var container: Node = _overlay.get_node("%HistoryContainer")
+    var empty_notice: Node = _overlay.get_node("%EmptyNotice")
+
+    # Drop the scene's placeholder entries but keep the EmptyNotice node so we
+    # can toggle its visibility instead of recreating it.
+    for child in container.get_children():
+        if child != empty_notice:
+            child.queue_free()
 
     var history = _load_history()
-    if history.size() == 0:
-        var empty = Label.new()
-        empty.text = "No runs recorded yet."
-        empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-        empty.add_theme_color_override("font_color", COLOR_MUTED)
-        container.add_child(empty)
-    else:
-        for i in range(history.size()):
-            var run = history[i]
-            _add_history_entry(container, run, i)
-            if i < history.size() - 1:
-                _add_spacer(container, 4)
-                _add_separator(container)
-                _add_spacer(container, 4)
+    empty_notice.visible = history.is_empty()
+    for run in history:
+        _add_history_entry(container, run)
 
-    # Wire buttons
-    _overlay.find_child("BackButton").pressed.connect(_toggle_history)
-    _overlay.find_child("CloseButton").pressed.connect(_close_modal)
+    _overlay.get_node("%BackButton").pressed.connect(_toggle_history)
+    _overlay.get_node("%CloseButton").pressed.connect(_close_modal)
 
-func _add_history_entry(parent: VBoxContainer, run: Dictionary, index: int):
+func _add_history_entry(container: Node, run: Dictionary):
+    var entry = _history_entry_scene.instantiate()
+    container.add_child(entry)
+
     var is_death = run.get("outcome", "") == "DEATH"
-    var color = COLOR_DEATH if is_death else COLOR_EXTRACTED
+    entry.get_node("%HeaderSuccess").visible = not is_death
+    entry.get_node("%HeaderFailure").visible = is_death
 
-    var header = HBoxContainer.new()
-    header.add_theme_constant_override("separation", 8)
-    parent.add_child(header)
+    entry.get_node("%Map").text = run.get("map", "?")
+    entry.get_node("%Duration").text = _format_duration(run.get("duration_sec", 0))
+    entry.get_node("%Timestamp").text = run.get("timestamp", "")
 
-    var outcome_label = Label.new()
-    outcome_label.text = run.get("outcome", "?")
-    outcome_label.add_theme_color_override("font_color", color)
-    outcome_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_OUTCOME)
-    outcome_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    header.add_child(outcome_label)
+    # The entry ships with placeholder StatPart instances — clear them and
+    # add a fresh one per real stat so the flow container sizes correctly.
+    var parts: Node = entry.get_node("%PartsContainer")
+    for child in parts.get_children():
+        child.queue_free()
 
-    var map_label = Label.new()
-    map_label.text = run.get("map", "?")
-    map_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65))
-    map_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_DETAIL)
-    header.add_child(map_label)
-
-    var time_label = Label.new()
-    time_label.text = _format_duration(run.get("duration_sec", 0))
-    time_label.add_theme_color_override("font_color", COLOR_MUTED)
-    time_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_DETAIL)
-    header.add_child(time_label)
-
-    # Compact stats line
-    var stats_parts = []
+    var part_texts: Array = []
     var kills = run.get("kills", 0)
     if kills > 0:
-        stats_parts.append("%d kill%s" % [kills, "s" if kills != 1 else ""])
+        part_texts.append("%d kill%s" % [kills, "s" if kills != 1 else ""])
     var items = run.get("items_picked", 0)
     if items > 0:
-        stats_parts.append("%d item%s" % [items, "s" if items != 1 else ""])
+        part_texts.append("%d item%s" % [items, "s" if items != 1 else ""])
     var xp = run.get("xp_gained", 0)
     if xp > 0:
-        stats_parts.append("+%d XP" % xp)
+        part_texts.append("+%d XP" % xp)
     var cash = run.get("cash_earned", 0)
     if cash > 0:
-        stats_parts.append("+€%d" % cash)
+        part_texts.append("+€%d" % cash)
     var val = run.get("value_gained", 0)
     if val > 0:
-        stats_parts.append("€%d loot" % val)
+        part_texts.append("€%d loot" % val)
 
-    if stats_parts.size() > 0:
-        var stats_label = Label.new()
-        stats_label.text = "  ".join(stats_parts)
-        stats_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_STATS)
-        stats_label.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
-        parent.add_child(stats_label)
-
-    var ts_label = Label.new()
-    ts_label.text = run.get("timestamp", "")
-    ts_label.add_theme_font_size_override("font_size", FONT_SIZE_HISTORY_TS)
-    ts_label.add_theme_color_override("font_color", Color(0.35, 0.35, 0.4))
-    parent.add_child(ts_label)
-
-# ─── UI Helpers ───
-
-func _add_section_header(parent: VBoxContainer, text: String):
-    var label = Label.new()
-    label.text = text
-    label.add_theme_font_size_override("font_size", FONT_SIZE_SECTION)
-    label.add_theme_color_override("font_color", COLOR_SECTION)
-    parent.add_child(label)
-
-func _add_stat_row(parent: VBoxContainer, label_text: String, value_text: String):
-    var row = HBoxContainer.new()
-    row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    parent.add_child(row)
-
-    var lbl = Label.new()
-    lbl.text = label_text
-    lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    lbl.add_theme_font_size_override("font_size", FONT_SIZE_STAT)
-    lbl.add_theme_color_override("font_color", COLOR_LABEL)
-    row.add_child(lbl)
-
-    var val = Label.new()
-    val.text = value_text
-    val.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-    val.add_theme_font_size_override("font_size", FONT_SIZE_STAT)
-    val.add_theme_color_override("font_color", COLOR_VALUE)
-    row.add_child(val)
-
-func _add_spacer(parent: VBoxContainer, height: int):
-    var spacer = Control.new()
-    spacer.custom_minimum_size = Vector2(0, height)
-    spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    parent.add_child(spacer)
-
-func _add_separator(parent: VBoxContainer):
-    var sep = HSeparator.new()
-    sep.add_theme_color_override("separator", COLOR_SEPARATOR)
-    parent.add_child(sep)
+    for text in part_texts:
+        var part = _history_stat_part_scene.instantiate()
+        parts.add_child(part)
+        part.get_node("%Summary").text = text
 
 func _format_duration(seconds: int) -> String:
     var mins = seconds / 60
@@ -759,11 +742,25 @@ func _save_to_history(summary: Dictionary):
                 cfg.set_value(section, key, ",".join(val))
             else:
                 cfg.set_value(section, key, val)
-    cfg.save(HISTORY_PATH)
+    cfg.save(_get_history_path())
 
 func _load_history() -> Array:
+    var path = _get_history_path()
+    # First-time Patty migration: if no per-profile history yet but the
+    # legacy file exists, pull it forward so existing progress carries over.
+    # Delete the legacy file afterwards so other profiles don't inherit it.
+    if path != HISTORY_PATH_LEGACY and !FileAccess.file_exists(path) and FileAccess.file_exists(HISTORY_PATH_LEGACY):
+        var bytes_in = FileAccess.open(HISTORY_PATH_LEGACY, FileAccess.READ)
+        if bytes_in:
+            var data = bytes_in.get_buffer(bytes_in.get_length())
+            bytes_in.close()
+            var bytes_out = FileAccess.open(path, FileAccess.WRITE)
+            if bytes_out:
+                bytes_out.store_buffer(data)
+                bytes_out.close()
+                DirAccess.remove_absolute(ProjectSettings.globalize_path(HISTORY_PATH_LEGACY))
     var cfg = ConfigFile.new()
-    if cfg.load(HISTORY_PATH) != OK:
+    if cfg.load(path) != OK:
         return []
     var count = cfg.get_value("meta", "count", 0)
     var history = []
