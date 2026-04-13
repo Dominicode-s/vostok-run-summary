@@ -60,7 +60,13 @@ var _tracked_ai: Array = []  # alive AI node refs for direct death detection
 # ─── Scene Tracking ───
 
 var _interface = null
-var _last_scene: String = ""
+# _last_scene holds the scene Node itself (not its name). Vostok names every
+# gameplay map scene root "Map" (Cabin.tscn, Village.tscn, Area_05.tscn all
+# use Map.gd as the root), so comparing scene.name missed map-to-map
+# transitions entirely — which left _interface pointing at the freed
+# Interface from the previous map and caused crashes when _end_run tried to
+# read inventory value during a shelter death.
+var _last_scene = null
 var _was_dead: bool = false
 var _was_shelter: bool = true
 var _scene_ready: bool = false
@@ -174,7 +180,7 @@ func _process(_delta):
             gameData.freeze = true
 
     _update_interface()
-    if _interface == null:
+    if not is_instance_valid(_interface):
         return
 
     match _run_state:
@@ -189,11 +195,15 @@ func _process(_delta):
 func _update_interface():
     var scene = get_tree().current_scene
     if scene == null:
+        _last_scene = null
+        _interface = null
         _scene_ready = false
         return
 
-    if scene.name != _last_scene:
-        _last_scene = scene.name
+    # Compare by Node identity, not name — multiple Vostok scenes share the
+    # root name "Map" and a naive name compare would hide real transitions.
+    if scene != _last_scene:
+        _last_scene = scene
         _interface = null
         _scene_ready = false
         # On every scene change, check whether the Patty profile changed
@@ -201,7 +211,11 @@ func _update_interface():
         if _get_history_path() != _last_history_path:
             _reload_last_summary_from_history()
 
-    if _interface == null:
+    # _interface may have been freed out from under us (e.g. mid-transition
+    # race), so test validity explicitly instead of trusting `== null`.
+    if not is_instance_valid(_interface):
+        _interface = null
+        _scene_ready = false
         var core_ui = scene.get_node_or_null("Core/UI")
         if core_ui:
             for child in core_ui.get_children():
@@ -446,18 +460,21 @@ func _get_history_path() -> String:
     return "user://RunSummaryHistory_" + profile + ".cfg"
 
 func _get_inv_value() -> float:
-    if _interface and "currentInventoryValue" in _interface:
+    if is_instance_valid(_interface) and "currentInventoryValue" in _interface:
         return _interface.currentInventoryValue
     return 0.0
 
 func _get_inv_count() -> int:
-    if _interface and _interface.get("inventoryGrid"):
-        var count = 0
-        for child in _interface.inventoryGrid.get_children():
-            if child.get("slotData") != null:
-                count += 1
-        return count
-    return 0
+    if not is_instance_valid(_interface):
+        return 0
+    var inv_grid = _interface.get("inventoryGrid")
+    if not is_instance_valid(inv_grid):
+        return 0
+    var count = 0
+    for child in inv_grid.get_children():
+        if child.get("slotData") != null:
+            count += 1
+    return count
 
 func _get_sim_time() -> float:
     var sim = get_node_or_null("/root/Simulation")

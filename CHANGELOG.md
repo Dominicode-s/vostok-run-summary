@@ -2,6 +2,11 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.2.3
+- **Fixed crash when dying in a shelter** — every Vostok gameplay scene (Cabin, Village, the zones, etc.) has a root Node named "Map", and the mod was comparing `scene.name` strings to detect map-to-map transitions. Since every map was named "Map", transitions between gameplay scenes went undetected, which left the cached `_interface` reference pointing at the freed Interface from the previous map. When the next `_end_run` (triggered by entering the shelter) then tried to read inventory value via that dangling reference, the game crashed.
+- Scene-change detection now compares by Node identity, not name, so map-to-map transitions are caught correctly.
+- Added `is_instance_valid()` guards around every `_interface` access — the mod was using `if _interface == null` checks, which don't catch Godot 4's freed-but-not-null state. Any future transition race is now handled gracefully.
+
 ## v1.2.2
 - Matched the modal text to MJRamon's v1.2.0 design intent — the main title ("Run Summary" / "Death Summary") and the category headers ("Combat", "Loot", "Economy", "Survival", "Progression") are now Title Case instead of ALL CAPS, and the title no longer force-overrides the theme color. The template's muted styling now shows through as the designer intended.
 
