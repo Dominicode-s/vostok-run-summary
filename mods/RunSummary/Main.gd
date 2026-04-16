@@ -46,6 +46,8 @@ var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
 var _acc_boss_kills: int = 0
+var _last_inv_poll_ms: int = 0
+const INV_POLL_INTERVAL_MS: int = 250  # 4Hz — plenty for pickup delta tracking
 
 # ─── Kill Attribution ───
 
@@ -60,7 +62,13 @@ var _tracked_ai: Array = []  # alive AI node refs for direct death detection
 # ─── Scene Tracking ───
 
 var _interface = null
-var _last_scene: String = ""
+# _last_scene holds the scene Node itself (not its name). Vostok names every
+# gameplay map scene root "Map" (Cabin.tscn, Village.tscn, Area_05.tscn all
+# use Map.gd as the root), so comparing scene.name missed map-to-map
+# transitions entirely — which left _interface pointing at the freed
+# Interface from the previous map and caused crashes when _end_run tried to
+# read inventory value during a shelter death.
+var _last_scene = null
 var _was_dead: bool = false
 var _was_shelter: bool = true
 var _scene_ready: bool = false
@@ -77,6 +85,7 @@ var _modal_visible: bool = false
 var _history_visible: bool = false
 var _last_summary: Dictionary = {}
 var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
+var _prev_freeze: bool = false
 var _modal_scene: PackedScene = null
 var _history_scene: PackedScene = null
 var _stats_header_scene: PackedScene = null
@@ -84,12 +93,8 @@ var _stats_row_scene: PackedScene = null
 var _history_entry_scene: PackedScene = null
 var _history_stat_part_scene: PackedScene = null
 
-# ─── UI Style Constants ───
-# Title color tints for outcome state; all other styling lives in the .tscn
-# templates via theme/stylebox overrides.
-
-const COLOR_DEATH = Color(1.0, 0.35, 0.35)
-const COLOR_EXTRACTED = Color(0.4, 1.0, 0.5)
+# All UI styling lives in the .tscn templates via theme/stylebox overrides —
+# Main.gd only populates text and toggles visibility.
 
 # ─── Config ───
 
@@ -133,13 +138,18 @@ func _ready():
         _load_local_config()
     _register_hotkey(cfg_reopen_key)
     _hook_other_mods()
-    get_tree().node_added.connect(_on_node_added)
-    # Load most recent run from history so hotkey works before first run
+    # node_added is connected only while IN_RUN — the signal fires for every
+    # node the engine spawns (particles, bullets, UI), so staying subscribed
+    # in the main menu and shelter wastes a dispatch + property-list walk per
+    # spawn and is the main source of the periodic stutter.
     _reload_last_summary_from_history()
 
 func _on_node_added(node: Node):
-    # Detect AI nodes — they have `dead`, `boss`, and `Death` method
-    if _run_state == RunState.IN_RUN and "dead" in node and "boss" in node and node.has_method("Death"):
+    # Fast path: reject the vast majority of nodes with an O(1) method lookup
+    # before walking the property list for the two `in` checks.
+    if not node.has_method("Death"):
+        return
+    if "dead" in node and "boss" in node:
         if node not in _tracked_ai:
             _tracked_ai.append(node)
 
@@ -178,7 +188,7 @@ func _process(_delta):
             gameData.freeze = true
 
     _update_interface()
-    if _interface == null:
+    if not is_instance_valid(_interface):
         return
 
     match _run_state:
@@ -193,11 +203,15 @@ func _process(_delta):
 func _update_interface():
     var scene = get_tree().current_scene
     if scene == null:
+        _last_scene = null
+        _interface = null
         _scene_ready = false
         return
 
-    if scene.name != _last_scene:
-        _last_scene = scene.name
+    # Compare by Node identity, not name — multiple Vostok scenes share the
+    # root name "Map" and a naive name compare would hide real transitions.
+    if scene != _last_scene:
+        _last_scene = scene
         _interface = null
         _scene_ready = false
         # On every scene change, check whether the Patty profile changed
@@ -205,7 +219,11 @@ func _update_interface():
         if _get_history_path() != _last_history_path:
             _reload_last_summary_from_history()
 
-    if _interface == null:
+    # _interface may have been freed out from under us (e.g. mid-transition
+    # race), so test validity explicitly instead of trusting `== null`.
+    if not is_instance_valid(_interface):
+        _interface = null
+        _scene_ready = false
         var core_ui = scene.get_node_or_null("Core/UI")
         if core_ui:
             for child in core_ui.get_children():
@@ -236,6 +254,8 @@ func _check_run_start():
 
 func _start_run(scene):
     _run_state = RunState.IN_RUN
+    if not get_tree().node_added.is_connected(_on_node_added):
+        get_tree().node_added.connect(_on_node_added)
     _snap_xp_total = _get_xp_total()
     _snap_health = gameData.health
     _snap_energy = gameData.energy
@@ -341,16 +361,21 @@ func _track_run():
             _acc_conditions.append(key)
 
     # Track items picked up (count actual Item nodes, not all grid children)
-    var inv_count = _get_inv_count()
-    if !_inv_snapshot_ready and inv_count > 0:
-        _snap_inv_count = inv_count
-        _acc_last_inv_count = inv_count
-        _snap_inv_value = _get_inv_value()
-        _inv_snapshot_ready = true
-    elif _inv_snapshot_ready and inv_count > _acc_last_inv_count:
-        _acc_items_picked += inv_count - _acc_last_inv_count
-    if inv_count > 0:
-        _acc_last_inv_count = inv_count
+    # Rate-limited — iterating every inventory child every frame was a steady
+    # per-frame cost with no gameplay benefit; 4Hz catches every pickup.
+    var now_ms = Time.get_ticks_msec()
+    if now_ms - _last_inv_poll_ms >= INV_POLL_INTERVAL_MS:
+        _last_inv_poll_ms = now_ms
+        var inv_count = _get_inv_count()
+        if !_inv_snapshot_ready and inv_count > 0:
+            _snap_inv_count = inv_count
+            _acc_last_inv_count = inv_count
+            _snap_inv_value = _get_inv_value()
+            _inv_snapshot_ready = true
+        elif _inv_snapshot_ready and inv_count > _acc_last_inv_count:
+            _acc_items_picked += inv_count - _acc_last_inv_count
+        if inv_count > 0:
+            _acc_last_inv_count = inv_count
 
 func _check_run_end():
     # Death
@@ -368,6 +393,9 @@ func _check_run_end():
 
 func _end_run(died: bool):
     _run_state = RunState.RUN_ENDED
+    if get_tree().node_added.is_connected(_on_node_added):
+        get_tree().node_added.disconnect(_on_node_added)
+    _tracked_ai.clear()
 
     var elapsed_ms = Time.get_ticks_msec() - _snap_time_real
     var xp_delta = _get_xp_total() - _snap_xp_total
@@ -450,18 +478,21 @@ func _get_history_path() -> String:
     return "user://RunSummaryHistory_" + profile + ".cfg"
 
 func _get_inv_value() -> float:
-    if _interface and "currentInventoryValue" in _interface:
+    if is_instance_valid(_interface) and "currentInventoryValue" in _interface:
         return _interface.currentInventoryValue
     return 0.0
 
 func _get_inv_count() -> int:
-    if _interface and _interface.get("inventoryGrid"):
-        var count = 0
-        for child in _interface.inventoryGrid.get_children():
-            if child.get("slotData") != null:
-                count += 1
-        return count
-    return 0
+    if not is_instance_valid(_interface):
+        return 0
+    var inv_grid = _interface.get("inventoryGrid")
+    if not is_instance_valid(inv_grid):
+        return 0
+    var count = 0
+    for child in inv_grid.get_children():
+        if child.get("slotData") != null:
+            count += 1
+    return count
 
 func _get_sim_time() -> float:
     var sim = get_node_or_null("/root/Simulation")
@@ -507,6 +538,7 @@ func _show_summary_modal():
     _modal_visible = true
     _history_visible = false
     _prev_mouse_mode = Input.mouse_mode
+    _prev_freeze = gameData.freeze if "freeze" in gameData else false
 
     # Match the game's own UI pattern (UIManager.UIOpen)
     Input.mouse_mode = Input.MOUSE_MODE_CONFINED
@@ -528,11 +560,12 @@ func _build_modal(summary: Dictionary):
     _overlay = _modal_scene.instantiate()
     _canvas_layer.add_child(_overlay)
 
-    # Header slots
+    # Header slots. Title is Title Case with no color override so the theme
+    # color from MJRamon's template shows through — outcome is still
+    # communicated via the death/extracted word at the front.
     var is_death = summary.get("outcome", "") == "DEATH"
     var title: Label = _overlay.get_node("%Title")
-    title.text = "DEATH SUMMARY" if is_death else "RUN SUMMARY"
-    title.add_theme_color_override("font_color", COLOR_DEATH if is_death else COLOR_EXTRACTED)
+    title.text = "Death Summary" if is_death else "Run Summary"
     _overlay.get_node("%SubtitleMap").text = summary.get("map", "Unknown")
     _overlay.get_node("%SubtitleDuration").text = _format_duration(summary.get("duration_sec", 0))
     _overlay.get_node("%Timestamp").text = summary.get("timestamp", "")
@@ -551,12 +584,12 @@ func _build_modal(summary: Dictionary):
     if boss_kills > 0:
         combat.append(["Bosses Killed", str(boss_kills)])
     combat.append(["Damage Taken", str(summary.get("damage_taken", 0))])
-    _add_stats_section(stats, "COMBAT", combat)
+    _add_stats_section(stats, "Combat", combat)
 
     # Loot
     var val = summary.get("value_gained", 0)
     var val_str = ("+€" if val >= 0 else "-€") + str(abs(val))
-    _add_stats_section(stats, "LOOT", [
+    _add_stats_section(stats, "Loot", [
         ["Items Picked Up", str(summary.get("items_picked", 0))],
         ["Value Gained", val_str],
     ])
@@ -569,7 +602,7 @@ func _build_modal(summary: Dictionary):
         economy.append(["Cash Earned", "+€" + str(cash_e)])
     if cash_s > 0:
         economy.append(["Cash Spent", "-€" + str(cash_s)])
-    _add_stats_section(stats, "ECONOMY", economy)
+    _add_stats_section(stats, "Economy", economy)
 
     # Survival
     var survival: Array = []
@@ -595,12 +628,12 @@ func _build_modal(summary: Dictionary):
         for c in conds:
             cond_names.append(CONDITIONS.get(c, c))
         survival.append(["Conditions", ", ".join(cond_names)])
-    _add_stats_section(stats, "SURVIVAL", survival)
+    _add_stats_section(stats, "Survival", survival)
 
     # Progression (conditional)
     var xp = summary.get("xp_gained", 0)
     if xp > 0:
-        _add_stats_section(stats, "PROGRESSION", [["XP Gained", "+" + str(xp)]])
+        _add_stats_section(stats, "Progression", [["XP Gained", "+" + str(xp)]])
 
     # Wire buttons
     _overlay.get_node("%HistoryButton").pressed.connect(_toggle_history)
@@ -633,9 +666,11 @@ func _close_modal():
         _canvas_layer.queue_free()
         _canvas_layer = null
     Input.mouse_mode = _prev_mouse_mode
-    # Always unfreeze on close (matches game's UIManager.UIClose pattern)
+    # Restore the freeze state the game had before our modal took over — forcing
+    # false here was breaking the shelter UI (it runs with freeze=true), leaving
+    # the camera half-locked until the player pressed Esc again to resolve.
     if "freeze" in gameData:
-        gameData.freeze = false
+        gameData.freeze = _prev_freeze
     # Allow starting a new run
     if _run_state == RunState.RUN_ENDED:
         _run_state = RunState.IDLE

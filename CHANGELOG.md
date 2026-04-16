@@ -2,6 +2,19 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.2.4
+- **Fixed camera being half-locked after closing the shelter summary** — closing the modal was force-setting `gameData.freeze = false`, which left the shelter UI in a broken half-resumed state until the player pressed Esc a second time. The modal now snapshots `freeze` on open and restores it on close, matching whatever state the game had before the summary appeared.
+- **Fixed the "every second" stutter** — `get_tree().node_added` was connected in `_ready` and stayed subscribed for the life of the session (main menu, shelter, everywhere), invoking the filter for every particle / bullet / UI node the engine spawned. The signal is now connected only while a run is active and disconnected on run end. The filter itself was also reordered to do the O(1) `has_method("Death")` check before walking the property list.
+- Rate-limited the inventory pickup poll from once-per-frame to 4 Hz — iterating every child of `inventoryGrid` every frame was steady-state waste; 250 ms is plenty to catch every pickup.
+
+## v1.2.3
+- **Fixed crash when dying in a shelter** — every Vostok gameplay scene (Cabin, Village, the zones, etc.) has a root Node named "Map", and the mod was comparing `scene.name` strings to detect map-to-map transitions. Since every map was named "Map", transitions between gameplay scenes went undetected, which left the cached `_interface` reference pointing at the freed Interface from the previous map. When the next `_end_run` (triggered by entering the shelter) then tried to read inventory value via that dangling reference, the game crashed.
+- Scene-change detection now compares by Node identity, not name, so map-to-map transitions are caught correctly.
+- Added `is_instance_valid()` guards around every `_interface` access — the mod was using `if _interface == null` checks, which don't catch Godot 4's freed-but-not-null state. Any future transition race is now handled gracefully.
+
+## v1.2.2
+- Matched the modal text to MJRamon's v1.2.0 design intent — the main title ("Run Summary" / "Death Summary") and the category headers ("Combat", "Loot", "Economy", "Survival", "Progression") are now Title Case instead of ALL CAPS, and the title no longer force-overrides the theme color. The template's muted styling now shows through as the designer intended.
+
 ## v1.2.1
 - **Fixed XP gained showing 0 with XP & Skills System v2.1.0+** — XP Skills now writes per-profile data at `user://XPData_<profile>.cfg`, but Run Summary was still reading the legacy `user://XPData.cfg`. Both mods now use the same profile-aware path.
 - **Fixed run history being shared across Patty's Profiles** — history is now keyed by active profile at `user://RunSummaryHistory_<profile>.cfg`. First-time switch migrates the legacy `RunSummaryHistory.cfg` into the active profile and deletes the legacy file so other profiles start fresh.
