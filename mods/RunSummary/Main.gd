@@ -46,6 +46,8 @@ var _acc_items_picked: int = 0
 var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
 var _acc_boss_kills: int = 0
+var _last_inv_poll_ms: int = 0
+const INV_POLL_INTERVAL_MS: int = 250  # 4Hz — plenty for pickup delta tracking
 
 # ─── Kill Attribution ───
 
@@ -83,6 +85,7 @@ var _modal_visible: bool = false
 var _history_visible: bool = false
 var _last_summary: Dictionary = {}
 var _prev_mouse_mode: int = Input.MOUSE_MODE_CAPTURED
+var _prev_freeze: bool = false
 var _modal_scene: PackedScene = null
 var _history_scene: PackedScene = null
 var _stats_header_scene: PackedScene = null
@@ -135,13 +138,18 @@ func _ready():
         _load_local_config()
     _register_hotkey(cfg_reopen_key)
     _hook_other_mods()
-    get_tree().node_added.connect(_on_node_added)
-    # Load most recent run from history so hotkey works before first run
+    # node_added is connected only while IN_RUN — the signal fires for every
+    # node the engine spawns (particles, bullets, UI), so staying subscribed
+    # in the main menu and shelter wastes a dispatch + property-list walk per
+    # spawn and is the main source of the periodic stutter.
     _reload_last_summary_from_history()
 
 func _on_node_added(node: Node):
-    # Detect AI nodes — they have `dead`, `boss`, and `Death` method
-    if _run_state == RunState.IN_RUN and "dead" in node and "boss" in node and node.has_method("Death"):
+    # Fast path: reject the vast majority of nodes with an O(1) method lookup
+    # before walking the property list for the two `in` checks.
+    if not node.has_method("Death"):
+        return
+    if "dead" in node and "boss" in node:
         if node not in _tracked_ai:
             _tracked_ai.append(node)
 
@@ -246,6 +254,8 @@ func _check_run_start():
 
 func _start_run(scene):
     _run_state = RunState.IN_RUN
+    if not get_tree().node_added.is_connected(_on_node_added):
+        get_tree().node_added.connect(_on_node_added)
     _snap_xp_total = _get_xp_total()
     _snap_health = gameData.health
     _snap_energy = gameData.energy
@@ -351,16 +361,21 @@ func _track_run():
             _acc_conditions.append(key)
 
     # Track items picked up (count actual Item nodes, not all grid children)
-    var inv_count = _get_inv_count()
-    if !_inv_snapshot_ready and inv_count > 0:
-        _snap_inv_count = inv_count
-        _acc_last_inv_count = inv_count
-        _snap_inv_value = _get_inv_value()
-        _inv_snapshot_ready = true
-    elif _inv_snapshot_ready and inv_count > _acc_last_inv_count:
-        _acc_items_picked += inv_count - _acc_last_inv_count
-    if inv_count > 0:
-        _acc_last_inv_count = inv_count
+    # Rate-limited — iterating every inventory child every frame was a steady
+    # per-frame cost with no gameplay benefit; 4Hz catches every pickup.
+    var now_ms = Time.get_ticks_msec()
+    if now_ms - _last_inv_poll_ms >= INV_POLL_INTERVAL_MS:
+        _last_inv_poll_ms = now_ms
+        var inv_count = _get_inv_count()
+        if !_inv_snapshot_ready and inv_count > 0:
+            _snap_inv_count = inv_count
+            _acc_last_inv_count = inv_count
+            _snap_inv_value = _get_inv_value()
+            _inv_snapshot_ready = true
+        elif _inv_snapshot_ready and inv_count > _acc_last_inv_count:
+            _acc_items_picked += inv_count - _acc_last_inv_count
+        if inv_count > 0:
+            _acc_last_inv_count = inv_count
 
 func _check_run_end():
     # Death
@@ -378,6 +393,9 @@ func _check_run_end():
 
 func _end_run(died: bool):
     _run_state = RunState.RUN_ENDED
+    if get_tree().node_added.is_connected(_on_node_added):
+        get_tree().node_added.disconnect(_on_node_added)
+    _tracked_ai.clear()
 
     var elapsed_ms = Time.get_ticks_msec() - _snap_time_real
     var xp_delta = _get_xp_total() - _snap_xp_total
@@ -520,6 +538,7 @@ func _show_summary_modal():
     _modal_visible = true
     _history_visible = false
     _prev_mouse_mode = Input.mouse_mode
+    _prev_freeze = gameData.freeze if "freeze" in gameData else false
 
     # Match the game's own UI pattern (UIManager.UIOpen)
     Input.mouse_mode = Input.MOUSE_MODE_CONFINED
@@ -647,9 +666,11 @@ func _close_modal():
         _canvas_layer.queue_free()
         _canvas_layer = null
     Input.mouse_mode = _prev_mouse_mode
-    # Always unfreeze on close (matches game's UIManager.UIClose pattern)
+    # Restore the freeze state the game had before our modal took over — forcing
+    # false here was breaking the shelter UI (it runs with freeze=true), leaving
+    # the camera half-locked until the player pressed Esc again to resolve.
     if "freeze" in gameData:
-        gameData.freeze = false
+        gameData.freeze = _prev_freeze
     # Allow starting a new run
     if _run_state == RunState.RUN_ENDED:
         _run_state = RunState.IDLE
