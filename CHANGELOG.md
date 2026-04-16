@@ -2,6 +2,9 @@
 
 All notable changes to the Run Summary mod will be documented here.
 
+## v1.2.5
+- Updated `RunSummaryHistoryEntry.tscn` template from **MJRamon** — drops the hardcoded `custom_minimum_size = Vector2(0, 26)` on the Body VBox so each history card sizes to its actual stat parts instead of reserving a fixed row height. Script-side contract is unchanged (same scene UID, same `%`-named nodes).
+
 ## v1.2.4
 - **Fixed camera being half-locked after closing the shelter summary** — closing the modal was force-setting `gameData.freeze = false`, which left the shelter UI in a broken half-resumed state until the player pressed Esc a second time. The modal now snapshots `freeze` on open and restores it on close, matching whatever state the game had before the summary appeared.
 - **Fixed the "every second" stutter** — `get_tree().node_added` was connected in `_ready` and stayed subscribed for the life of the session (main menu, shelter, everywhere), invoking the filter for every particle / bullet / UI node the engine spawned. The signal is now connected only while a run is active and disconnected on run end. The filter itself was also reordered to do the O(1) `has_method("Death")` check before walking the property list.
