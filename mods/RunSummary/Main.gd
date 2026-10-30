@@ -1,17 +1,13 @@
 extends Node
 
-# Run Summary — Pure autoload, no script overrides
+# Run Summary: Pure autoload, no script overrides
 # Shows a post-run modal with stats after death or returning to shelter.
 # Persists last 10 runs to disk. Hooks Cash/XP mods if present.
 
 var gameData = preload("res://Resources/GameData.tres")
 
-# ─── Run State Machine ───
-
 enum RunState { IDLE, IN_RUN, RUN_ENDED }
 var _run_state: int = RunState.IDLE
-
-# ─── Snapshot (captured at run start) ───
 
 var _snap_xp_total: int = 0
 var _snap_health: float = 100.0
@@ -24,8 +20,6 @@ var _snap_time_real: int = 0
 var _snap_time_game: float = 0.0
 var _snap_map: String = ""
 var _snap_zone: String = ""
-
-# ─── Accumulators (incremented during run) ───
 
 var _acc_kills: int = 0
 var _acc_cash_earned: int = 0
@@ -47,9 +41,7 @@ var _acc_last_inv_count: int = 0
 var _inv_snapshot_ready: bool = false
 var _acc_boss_kills: int = 0
 var _last_inv_poll_ms: int = 0
-const INV_POLL_INTERVAL_MS: int = 250  # 4Hz — plenty for pickup delta tracking
-
-# ─── Kill Attribution ───
+const INV_POLL_INTERVAL_MS: int = 250  # 4Hz, plenty for pickup delta tracking
 
 const FIRE_WINDOW_MS: int = 500  # grace period after releasing fire button
 const GRENADE_WINDOW_MS: int = 6000  # 6s covers 3s fuse + travel + buffer
@@ -59,13 +51,11 @@ var _prev_grenade1: bool = false
 var _prev_grenade2: bool = false
 var _tracked_ai: Array = []  # alive AI node refs for direct death detection
 
-# ─── Scene Tracking ───
-
 var _interface = null
 # _last_scene holds the scene Node itself (not its name). Vostok names every
 # gameplay map scene root "Map" (Cabin.tscn, Village.tscn, Area_05.tscn all
 # use Map.gd as the root), so comparing scene.name missed map-to-map
-# transitions entirely — which left _interface pointing at the freed
+# transitions entirely, which left _interface pointing at the freed
 # Interface from the previous map and caused crashes when _end_run tried to
 # read inventory value during a shelter death.
 var _last_scene = null
@@ -73,11 +63,9 @@ var _was_dead: bool = false
 var _was_shelter: bool = true
 var _scene_ready: bool = false
 # Records the history path we last loaded. Used to detect Patty profile
-# switches — when _get_history_path() returns a different path on a menu→game
+# switches: when _get_history_path() returns a different path on a menu→game
 # transition, we reload _last_summary. Stays constant without Patty.
 var _last_history_path: String = ""
-
-# ─── UI ───
 
 var _canvas_layer: CanvasLayer = null
 var _overlay: ColorRect = null
@@ -93,15 +81,11 @@ var _stats_row_scene: PackedScene = null
 var _history_entry_scene: PackedScene = null
 var _history_stat_part_scene: PackedScene = null
 
-# All UI styling lives in the .tscn templates via theme/stylebox overrides —
+# All UI styling lives in the .tscn templates via theme/stylebox overrides;
 # Main.gd only populates text and toggles visibility.
-
-# ─── Config ───
 
 var cfg_auto_show: bool = true
 var cfg_reopen_key: int = KEY_F6
-
-# ─── MCM ───
 
 var _mcm_helpers = null
 const MCM_FILE_PATH = "user://MCM/RunSummary"
@@ -111,16 +95,12 @@ const HISTORY_PATH_LEGACY = "user://RunSummaryHistory.cfg"
 const XP_PATH_LEGACY = "user://XPData.cfg"
 const REOPEN_ACTION = "run_summary_reopen"
 
-# ─── Condition names for display ───
-
 const CONDITIONS = {
     "bleeding": "Bleeding", "fracture": "Fracture", "burn": "Burn",
     "frostbite": "Frostbite", "insanity": "Insanity", "rupture": "Rupture",
     "headshot": "Headshot", "starvation": "Starvation",
     "dehydration": "Dehydration", "poisoning": "Poisoning"
 }
-
-# ─── Initialization ───
 
 func _ready():
     process_mode = Node.PROCESS_MODE_ALWAYS
@@ -138,7 +118,7 @@ func _ready():
         _load_local_config()
     _register_hotkey(cfg_reopen_key)
     _hook_other_mods()
-    # node_added is connected only while IN_RUN — the signal fires for every
+    # node_added is connected only while IN_RUN; the signal fires for every
     # node the engine spawns (particles, bullets, UI), so staying subscribed
     # in the main menu and shelter wastes a dispatch + property-list walk per
     # spawn and is the main source of the periodic stutter.
@@ -176,8 +156,6 @@ func _on_cash_picked_up(amount: int):
     if _run_state == RunState.IN_RUN:
         _acc_cash_earned += amount
 
-# ─── Main Loop ───
-
 func _process(_delta):
     # Enforce game state every frame while modal is open
     # (game scripts may reset freeze/mouse_mode during scene transitions)
@@ -208,7 +186,7 @@ func _update_interface():
         _scene_ready = false
         return
 
-    # Compare by Node identity, not name — multiple Vostok scenes share the
+    # Compare by Node identity, not name; multiple Vostok scenes share the
     # root name "Map" and a naive name compare would hide real transitions.
     if scene != _last_scene:
         _last_scene = scene
@@ -236,8 +214,6 @@ func _reload_last_summary_from_history():
     _last_history_path = _get_history_path()
     var history = _load_history()
     _last_summary = history[0] if history.size() > 0 else {}
-
-# ─── Run Lifecycle ───
 
 func _check_run_start():
     if !_scene_ready:
@@ -299,7 +275,6 @@ func _start_run(scene):
     print("[RunSummary] Run started on %s" % _snap_map)
 
 func _track_run():
-    # ─── Track fire/grenade timing (used by both detection methods) ───
     if Input.is_action_pressed("fire") or gameData.isFiring:
         _last_fire_time = Time.get_ticks_msec()
 
@@ -310,7 +285,6 @@ func _track_run():
     _prev_grenade1 = g1
     _prev_grenade2 = g2
 
-    # ─── Kill detection: poll tracked AI nodes for death ───
     var still_alive: Array = []
     for ai in _tracked_ai:
         if !is_instance_valid(ai):
@@ -355,13 +329,12 @@ func _track_run():
             _acc_mental_restored += current_mental - _acc_last_mental
         _acc_last_mental = current_mental
 
-    # Track conditions
     for key in CONDITIONS:
         if key in gameData and gameData.get(key) and key not in _acc_conditions:
             _acc_conditions.append(key)
 
     # Track items picked up (count actual Item nodes, not all grid children)
-    # Rate-limited — iterating every inventory child every frame was a steady
+    # Rate-limited: iterating every inventory child every frame was a steady
     # per-frame cost with no gameplay benefit; 4Hz catches every pickup.
     var now_ms = Time.get_ticks_msec()
     if now_ms - _last_inv_poll_ms >= INV_POLL_INTERVAL_MS:
@@ -378,13 +351,11 @@ func _track_run():
             _acc_last_inv_count = inv_count
 
 func _check_run_end():
-    # Death
     if gameData.isDead and !_was_dead:
         _was_dead = true
         _end_run(true)
         return
 
-    # Returned to shelter
     var in_shelter = gameData.shelter if "shelter" in gameData else false
     if in_shelter and !_was_shelter:
         _was_shelter = true
@@ -426,13 +397,11 @@ func _end_run(died: bool):
     _last_summary = summary
     _save_to_history(summary)
 
-    print("[RunSummary] Run ended — %s on %s (%ds)" % [summary.outcome, summary.map, summary.duration_sec])
+    print("[RunSummary] Run ended - %s on %s (%ds)" % [summary.outcome, summary.map, summary.duration_sec])
 
     if cfg_auto_show:
         # Delay to let death screen / shelter load finish
         get_tree().create_timer(1.5).timeout.connect(_show_summary_modal)
-
-# ─── Helpers ───
 
 func _is_player_attacking() -> bool:
     if Input.is_action_pressed("fire"):
@@ -452,7 +421,6 @@ func _get_xp_total() -> int:
         return cfg.get_value("xp", "xpTotal", 0)
     return 0
 
-# ─── Patty's Profiles compat ─────────────────────────────────
 # .cfg files aren't swapped by Patty (only .tres are tracked), so we key our
 # own cfg files by the active profile to keep per-profile state isolated.
 # Returns "" if Patty isn't installed, in which case we use the legacy paths.
@@ -500,8 +468,6 @@ func _get_sim_time() -> float:
         return sim.time
     return 0.0
 
-# ─── Input ───
-
 func _input(event):
     if _modal_visible:
         # Esc or hotkey (by keycode) closes modal
@@ -526,8 +492,6 @@ func _unhandled_input(event):
     # Catch any mouse clicks that passed through GUI (clicked overlay, not a button)
     if _modal_visible and event is InputEventMouseButton:
         get_viewport().set_input_as_handled()
-
-# ─── Summary Modal UI ───
 
 func _show_summary_modal():
     if _modal_visible:
@@ -561,7 +525,7 @@ func _build_modal(summary: Dictionary):
     _canvas_layer.add_child(_overlay)
 
     # Header slots. Title is Title Case with no color override so the theme
-    # color from MJRamon's template shows through — outcome is still
+    # color from MJRamon's template shows through; outcome is still
     # communicated via the death/extracted word at the front.
     var is_death = summary.get("outcome", "") == "DEATH"
     var title: Label = _overlay.get_node("%Title")
@@ -570,7 +534,7 @@ func _build_modal(summary: Dictionary):
     _overlay.get_node("%SubtitleDuration").text = _format_duration(summary.get("duration_sec", 0))
     _overlay.get_node("%Timestamp").text = summary.get("timestamp", "")
 
-    # Stats — drop the scene's placeholder rows, then instance templates per
+    # Stats: drop the scene's placeholder rows, then instance templates per
     # real section. Keeping a template-per-row instead of building bespoke
     # Labels means the styled bullet/guideline/value layout from the .tscn
     # applies automatically.
@@ -635,7 +599,6 @@ func _build_modal(summary: Dictionary):
     if xp > 0:
         _add_stats_section(stats, "Progression", [["XP Gained", "+" + str(xp)]])
 
-    # Wire buttons
     _overlay.get_node("%HistoryButton").pressed.connect(_toggle_history)
     _overlay.get_node("%CloseButton").pressed.connect(_close_modal)
 
@@ -661,12 +624,11 @@ func _close_modal():
     _modal_visible = false
     _history_visible = false
     _cleanup_modal()
-    # Also free the canvas layer
     if _canvas_layer and is_instance_valid(_canvas_layer):
         _canvas_layer.queue_free()
         _canvas_layer = null
     Input.mouse_mode = _prev_mouse_mode
-    # Restore the freeze state the game had before our modal took over — forcing
+    # Restore the freeze state the game had before our modal took over; forcing
     # false here was breaking the shelter UI (it runs with freeze=true), leaving
     # the camera half-locked until the player pressed Esc again to resolve.
     if "freeze" in gameData:
@@ -674,8 +636,6 @@ func _close_modal():
     # Allow starting a new run
     if _run_state == RunState.RUN_ENDED:
         _run_state = RunState.IDLE
-
-# ─── History View ───
 
 func _toggle_history():
     if _history_visible:
@@ -721,7 +681,7 @@ func _add_history_entry(container: Node, run: Dictionary):
     entry.get_node("%Duration").text = _format_duration(run.get("duration_sec", 0))
     entry.get_node("%Timestamp").text = run.get("timestamp", "")
 
-    # The entry ships with placeholder StatPart instances — clear them and
+    # The entry ships with placeholder StatPart instances; clear them and
     # add a fresh one per real stat so the flow container sizes correctly.
     var parts: Node = entry.get_node("%PartsContainer")
     for child in parts.get_children():
@@ -757,8 +717,6 @@ func _format_duration(seconds: int) -> String:
         mins = mins % 60
         return "%dh %02dm" % [hrs, mins]
     return "%dm %02ds" % [mins, secs]
-
-# ─── Persistence (Run History) ───
 
 func _save_to_history(summary: Dictionary):
     var history = _load_history()
@@ -813,8 +771,6 @@ func _load_history() -> Array:
         history.append(run)
     return history
 
-# ─── Hotkey ───
-
 func _register_hotkey(key_code: int):
     if not InputMap.has_action(REOPEN_ACTION):
         InputMap.add_action(REOPEN_ACTION)
@@ -823,8 +779,6 @@ func _register_hotkey(key_code: int):
     var ev = InputEventKey.new()
     ev.keycode = key_code
     InputMap.action_add_event(REOPEN_ACTION, ev)
-
-# ─── MCM Integration ───
 
 func _try_load_mcm():
     if ResourceLoader.exists("res://ModConfigurationMenu/Scripts/Doink Oink/MCM_Helpers.tres"):
@@ -842,14 +796,14 @@ func _register_mcm():
 
     config.set_value("Bool", "cfg_auto_show", {
         "name" = "Auto-show after run",
-        "tooltip" = "Automatically show the run summary modal after death or extraction",
+        "tooltip" = "Show summary after death or extraction",
         "default" = true, "value" = true,
         "menu_pos" = 1
     })
 
     config.set_value("Keycode", "cfg_reopen_key", {
         "name" = "Reopen Summary Hotkey",
-        "tooltip" = "Press to reopen the last run summary",
+        "tooltip" = "Reopen last run summary",
         "default" = KEY_F6, "default_type" = "Key",
         "value" = KEY_F6, "type" = "Key",
         "menu_pos" = 2
